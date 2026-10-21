@@ -1,0 +1,268 @@
+networks:
+  spy_network:
+    driver: bridge
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: spy_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-spy_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-mineracao_fb}
+      STREAMLIT_DB_PASSWORD: ${STREAMLIT_DB_PASSWORD:?STREAMLIT_DB_PASSWORD is required}
+      PIPELINE_DB_PASSWORD: ${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./infra/init-readonly-role.sh:/docker-entrypoint-initdb.d/zz-readonly-role.sh:ro
+      - ./infra/init-pipeline-role.sh:/docker-entrypoint-initdb.d/zz-pipeline-role.sh:ro
+    networks:
+      - spy_network
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spy_admin} -d ${POSTGRES_DB:-mineracao_fb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  redis:
+    image: redis:7-alpine
+    container_name: spy_redis
+    restart: unless-stopped
+    command: [
+      "redis-server",
+      "--appendonly", "yes",
+      "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}",
+      "--maxmemory", "512mb",
+      "--maxmemory-policy", "noeviction"  # Retorna erro em vez de descartar tarefas da fila
+    ]
+    volumes:
+      - redis_data:/data
+    networks:
+      - spy_network
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  ad-producer:
+    build:
+      context: .
+      dockerfile: ./docker/producer.Dockerfile
+    container_name: spy_producer
+    restart: unless-stopped
+    shm_size: "1gb"  # Garante estabilidade para streams pesados de pacotes CDP
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,size=256m,mode=1777
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - CDP_HOST=${CDP_HOST:-host.docker.internal}
+      - CDP_PORT=${CDP_PORT:-9222}
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - spy_network
+  worker-qualification:
+    build:
+      context: .
+      dockerfile: ./docker/worker.Dockerfile
+    container_name: spy_worker_qualification
+    restart: unless-stopped
+    command: celery -A core.celery_app worker -Q qualification_queue --concurrency=8 --loglevel=INFO
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,size=256m,mode=1777
+    volumes:
+      - ./secrets:/run/secrets:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    environment:
+      - CELERY_INCLUDE=src.worker_qualification
+      - POSTGRES_URL=postgresql://pipeline_writer:${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-mineracao_fb}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - CLOUDFLARE_R2_ACCOUNT_ID=${CLOUDFLARE_R2_ACCOUNT_ID}
+      - CLOUDFLARE_R2_ACCESS_KEY=${CLOUDFLARE_R2_ACCESS_KEY}
+      - CLOUDFLARE_R2_SECRET_KEY=${CLOUDFLARE_R2_SECRET_KEY}
+      - CLOUDFLARE_R2_BUCKET=${CLOUDFLARE_R2_BUCKET}
+      - CLOUDFLARE_R2_PUBLIC_URL=${CLOUDFLARE_R2_PUBLIC_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - spy_network
+  worker-ia:
+    build:
+      context: .
+      dockerfile: ./docker/worker.Dockerfile
+    container_name: spy_worker_ia
+    restart: unless-stopped
+    command: celery -A core.celery_app worker -Q ai_multimodal_queue --concurrency=3 --loglevel=INFO
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,size=1G,mode=1777  # Prevenção de acúmulo de arquivos temporários em disco
+    volumes:
+      - ./secrets:/run/secrets:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+    environment:
+      - CELERY_INCLUDE=src.worker_ia
+      - POSTGRES_URL=postgresql://pipeline_writer:${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-mineracao_fb}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - CLOUDFLARE_R2_ACCOUNT_ID=${CLOUDFLARE_R2_ACCOUNT_ID}
+      - CLOUDFLARE_R2_ACCESS_KEY=${CLOUDFLARE_R2_ACCESS_KEY}
+      - CLOUDFLARE_R2_SECRET_KEY=${CLOUDFLARE_R2_SECRET_KEY}
+      - CLOUDFLARE_R2_BUCKET=${CLOUDFLARE_R2_BUCKET}
+      - CLOUDFLARE_R2_PUBLIC_URL=${CLOUDFLARE_R2_PUBLIC_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - spy_network
+  celery-beat:
+    build:
+      context: .
+      dockerfile: ./docker/worker.Dockerfile
+    container_name: spy_scheduler
+    restart: unless-stopped
+    command: celery -A core.celery_app worker --beat -Q lifecycle_queue --concurrency=1 --loglevel=INFO --schedule /tmp/celerybeat-schedule
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,size=64m,mode=1777
+    volumes:
+      - ./secrets:/run/secrets:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+    environment:
+      - CELERY_INCLUDE=src.lifecycle
+      - POSTGRES_URL=postgresql://pipeline_writer:${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-mineracao_fb}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - CLOUDFLARE_R2_ACCOUNT_ID=${CLOUDFLARE_R2_ACCOUNT_ID}
+      - CLOUDFLARE_R2_ACCESS_KEY=${CLOUDFLARE_R2_ACCESS_KEY}
+      - CLOUDFLARE_R2_SECRET_KEY=${CLOUDFLARE_R2_SECRET_KEY}
+      - CLOUDFLARE_R2_BUCKET=${CLOUDFLARE_R2_BUCKET}
+      - CLOUDFLARE_R2_PUBLIC_URL=${CLOUDFLARE_R2_PUBLIC_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - spy_network
+  dashboard-ui:
+    build:
+      context: .
+      dockerfile: ./docker/streamlit.Dockerfile
+    container_name: spy_dashboard
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8501:8501"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,size=256m,mode=1777
+    volumes:
+      - ./secrets:/run/secrets:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    environment:
+      # Conexão estritamente restrita a leitura contra injeção SQL no RAG
+      - HOME=/tmp
+      - POSTGRES_URL=postgresql://streamlit_readonly:${STREAMLIT_DB_PASSWORD:?STREAMLIT_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-mineracao_fb}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:?DASHBOARD_PASSWORD is required}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - spy_network
+  flower:
+    image: mher/flower:2.0
+    container_name: spy_flower
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,size=64m,mode=1777
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    environment:
+      - HOME=/tmp
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - FLOWER_BASIC_AUTH=${FLOWER_BASIC_AUTH:?FLOWER_BASIC_AUTH is required}
+    ports:
+      - "127.0.0.1:5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - spy_network
