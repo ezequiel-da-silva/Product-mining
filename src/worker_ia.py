@@ -446,7 +446,13 @@ def _erro_configuracao(erro: Exception) -> bool:
     return erro.code == 400 and ("API_KEY" in texto or "API KEY" in texto)
 
 
-def _tratar_falha_processamento(task, oferta_id: int, lease_token: str, erro: Exception) -> dict:
+def _tratar_falha_processamento(
+    task,
+    oferta_id: int,
+    lease_token: str,
+    erro: Exception,
+    analise: dict | None = None,
+) -> dict:
     configuracao = _erro_configuracao(erro)
     definitiva = not configuracao and (_erro_permanente(erro) or task.request.retries >= task.max_retries)
     try:
@@ -469,7 +475,8 @@ def _tratar_falha_processamento(task, oferta_id: int, lease_token: str, erro: Ex
         return {"status": "dead_letter", "oferta_id": oferta_id}
 
     logger.error("[Oferta %s] Erro: %s. Executando retry...", oferta_id, erro)
-    raise task.retry(exc=erro, countdown=15 * (2**task.request.retries)) from erro
+    retry_kwargs = {"kwargs": {"analise": analise}} if analise else {}
+    raise task.retry(exc=erro, countdown=15 * (2**task.request.retries), **retry_kwargs) from erro
 
 
 def _parte_video(video_file):
@@ -539,7 +546,13 @@ def _obter_prompt_final(ad_copy_texto: str) -> str:
 
 
 @app.task(bind=True, max_retries=3, rate_limit="10/m")
-def processar_anuncio_multimodal(self, oferta_id: int, video_url_r2: str, ad_copy_texto: str):
+def processar_anuncio_multimodal(
+    self,
+    oferta_id: int,
+    video_url_r2: str,
+    ad_copy_texto: str,
+    analise: dict | None = None,
+):
     """Consome a mídia permanente do R2, processa com Gemini e indexa no pgvector[cite: 1]."""
     reservation_status, lease_remaining, lease_token = _reservar_oferta_para_processamento(oferta_id)
     if reservation_status == "completed":
@@ -566,23 +579,28 @@ def processar_anuncio_multimodal(self, oferta_id: int, video_url_r2: str, ad_cop
 
     video_file = None
     tmp_path = None
+    resultado_validado = None
 
     try:
-        tmp_path = _baixar_video_temporario(video_url_r2)
+        if analise:
+            resultado_validado = AnaliseAnuncioSchema(**analise)
+            logger.info("[Oferta %s] Retry reaproveita a análise já paga.", oferta_id)
+        else:
+            tmp_path = _baixar_video_temporario(video_url_r2)
 
-        logger.info(f"[Oferta {oferta_id}] Upload para Gemini File API...")
-        video_file = cliente_ia.files.upload(file=tmp_path)
-        video_file = _aguardar_upload_ativo(video_file)
+            logger.info(f"[Oferta {oferta_id}] Upload para Gemini File API...")
+            video_file = cliente_ia.files.upload(file=tmp_path)
+            video_file = _aguardar_upload_ativo(video_file)
 
-        prompt_final = _obter_prompt_final(ad_copy_texto)
-        resposta = cliente_ia.models.generate_content(
-            model=MODELO_ANALISE,
-            contents=[_parte_video(video_file), prompt_final],
-            config=_config_geracao(),
-        )
-        _registrar_uso_tokens(oferta_id, resposta)
-        dados_extraidos = json.loads(resposta.text)
-        resultado_validado = AnaliseAnuncioSchema(**dados_extraidos)
+            prompt_final = _obter_prompt_final(ad_copy_texto)
+            resposta = cliente_ia.models.generate_content(
+                model=MODELO_ANALISE,
+                contents=[_parte_video(video_file), prompt_final],
+                config=_config_geracao(),
+            )
+            _registrar_uso_tokens(oferta_id, resposta)
+            dados_extraidos = json.loads(resposta.text)
+            resultado_validado = AnaliseAnuncioSchema(**dados_extraidos)
 
         vetor_embedding = _obter_vetor_embedding(oferta_id, resultado_validado.model_dump())
 
@@ -603,7 +621,8 @@ def processar_anuncio_multimodal(self, oferta_id: int, video_url_r2: str, ad_cop
         return resultado_validado.model_dump()
 
     except Exception as e:
-        return _tratar_falha_processamento(self, oferta_id, lease_token, e)
+        paga = resultado_validado.model_dump() if resultado_validado else None
+        return _tratar_falha_processamento(self, oferta_id, lease_token, e, paga)
 
     finally:
         # FinOps compulsório: remoção imediata da mídia na nuvem e do arquivo em tmpfs[cite: 1]

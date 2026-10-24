@@ -75,9 +75,14 @@ pre-commit install
 
 ```
 
+O `pre-commit install` instala os hooks `pre-commit` e `commit-msg` (Conventional Commits).
+Em um clone que já tinha os hooks, rode `pre-commit install` de novo para ativar o `commit-msg`.
+
 
 3. **Inicialização do Cluster:**
-Com o `.env` configurado e o navegador Anti-Detect aberto, faça o build e suba os contêineres:
+Com o `.env` configurado e o navegador Anti-Detect aberto, faça o build e suba os contêineres
+num volume novo. Em um volume que já existe, siga antes a ordem de
+"Atualizar um volume já existente" abaixo:
 ```bash
 docker compose up -d --build
 
@@ -87,15 +92,26 @@ PostgreSQL e Redis não são publicados no host. Dashboard (`127.0.0.1:8501`) e 
 (`127.0.0.1:5555`) pedem as credenciais `DASHBOARD_PASSWORD` e `FLOWER_BASIC_AUTH`.
 Para TLS fora da máquina local, coloque um proxy reverso na frente desses painéis.
 
-Para bancos existentes com volume persistente, aplique as migrações e sincronize as senhas
-dos papéis de leitura e de escrita (os scripts em `/docker-entrypoint-initdb.d` só são
-executados na primeira inicialização do volume):
+### Atualizar um volume já existente
+
+Os scripts em `/docker-entrypoint-initdb.d` só rodam na primeira inicialização do volume, e o
+código novo pode depender de colunas criadas pelas migrações. Por isso, atualize o schema
+antes de subir as imagens novas, sempre sem `down -v`:
+
 ```bash
-./infra/apply-migrations.sh
+# .env com todas as senhas, incluindo LIFECYCLE_DB_PASSWORD
+docker compose up -d --no-deps --force-recreate postgres
 docker compose exec -T postgres /docker-entrypoint-initdb.d/zz-readonly-role.sh
 docker compose exec -T postgres /docker-entrypoint-initdb.d/zz-pipeline-role.sh
 docker compose exec -T postgres /docker-entrypoint-initdb.d/zz-lifecycle-role.sh
+./infra/apply-migrations.sh
+docker compose up -d --build
 ```
+
+Cada migração roda com `lock_timeout` de 5 s (ajustável em `MIGRATION_LOCK_TIMEOUT`). Se uma
+delas não conseguir o lock, o script para com erro, nada daquela migração é gravado e as
+anteriores continuam válidas. Nesse caso, rode `./infra/apply-migrations.sh` de novo e não
+suba o código novo enquanto ele não terminar sem erro.
 
 Para trocar a senha de `pipeline_writer`, `lifecycle_writer` ou `streamlit_readonly` em um
 volume que já existe, aplique o `ALTER ROLE` antes de recriar os serviços. A ordem inversa
@@ -120,20 +136,11 @@ docker compose up -d --no-deps --force-recreate worker-qualification worker-ia d
 
 A partir da migração `009`, o `pipeline_writer` perde `DELETE` em `ofertas`; só o
 `lifecycle_writer` (usado pelo `celery-beat`) pode apagar linhas. Em um volume criado antes
-dessa mudança, defina `LIFECYCLE_DB_PASSWORD` no `.env` e aplique, nesta ordem, sem
-`down -v`:
-
-```bash
-docker compose up -d --no-deps --force-recreate postgres
-docker compose exec -T postgres /docker-entrypoint-initdb.d/zz-lifecycle-role.sh
-docker compose up -d --no-deps --force-recreate celery-beat
-./infra/apply-migrations.sh
-```
-
-Recriar o `postgres` apenas carrega o novo volume montado do script (ele não é executado de
-novo automaticamente); o `zz-lifecycle-role.sh` cria o papel, e só então o `celery-beat` deve
-ser recriado para passar a usar `lifecycle_writer`. Por fim, `apply-migrations.sh` aplica a
-`009` e revoga `DELETE` de `pipeline_writer`.
+dessa mudança, use a ordem de "Atualizar um volume já existente": recriar o `postgres` só
+monta o `zz-lifecycle-role.sh` (ele não roda sozinho), a execução manual cria o papel, o
+`apply-migrations.sh` aplica a `009` e o `docker compose up -d --build` recria o
+`celery-beat` já com `lifecycle_writer`. Se a atualização atravessar as 03:00, a expiração
+daquela noite pode falhar sem apagar nada e roda de novo na noite seguinte.
 
 `GEMINI_API_KEY` e as chaves do R2 podem ficar no `.env`. Para limitar o acesso por serviço,
 um arquivo não vazio em `secrets/gemini/GEMINI_API_KEY` substitui a variável para o worker de

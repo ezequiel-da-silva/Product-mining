@@ -47,6 +47,7 @@ do
 
   {
     printf 'BEGIN;\n'
+    printf "SET LOCAL lock_timeout = '%s';\n" "${MIGRATION_LOCK_TIMEOUT:-5s}"
     cat "$file"
     printf "INSERT INTO schema_migrations (versao) VALUES ('%s');\n" "$versao"
     printf 'COMMIT;\n'

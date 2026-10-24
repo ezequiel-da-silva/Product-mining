@@ -255,6 +255,96 @@ def test_embedding_com_tamanho_errado_vai_para_dlq(monkeypatch):
     send_task.assert_not_called()
 
 
+def test_falha_no_embedding_apos_geracao_retry_leva_a_analise(monkeypatch):
+    import src.worker_ia as worker
+
+    monkeypatch.setattr(
+        worker,
+        "_reservar_oferta_para_processamento",
+        lambda _oferta_id: ("reserved", 0, "token-1"),
+    )
+    monkeypatch.setattr(worker, "_baixar_video_temporario", lambda _url: "/tmp/video-inexistente.mp4")
+    upload = MagicMock()
+    upload.name = "files/video"
+    monkeypatch.setattr(worker.cliente_ia.files, "upload", lambda **_kwargs: upload)
+    monkeypatch.setattr(worker, "_aguardar_upload_ativo", lambda video: video)
+    monkeypatch.setattr(worker, "_parte_video", lambda _video: "video")
+    resposta = MagicMock()
+    resposta.text = json.dumps(_dados_analise())
+    monkeypatch.setattr(worker.cliente_ia.models, "generate_content", lambda **_kwargs: resposta)
+    monkeypatch.setattr(worker, "_embedding_em_cache", lambda *_args: None)
+
+    def _quota(**_kwargs):
+        raise ClientError(429, {"error": {"message": "quota"}})
+
+    monkeypatch.setattr(worker.cliente_ia.models, "embed_content", _quota)
+    monkeypatch.setattr(worker.cliente_ia.files, "delete", lambda **_kwargs: None)
+    monkeypatch.setattr(worker, "_liberar_reserva_erro", MagicMock())
+    task_self = MagicMock()
+    task_self.request.retries = 0
+    task_self.max_retries = 3
+    task_self.retry.side_effect = Retry("retry")
+
+    with pytest.raises(Retry):
+        worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
+
+    analise = task_self.retry.call_args.kwargs["kwargs"]["analise"]
+    assert analise["nicho"] == "Beleza"
+    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", False)
+
+
+def test_retry_com_analise_nao_baixa_nem_chama_gemini(monkeypatch):
+    import src.worker_ia as worker
+
+    monkeypatch.setattr(
+        worker,
+        "_reservar_oferta_para_processamento",
+        lambda _oferta_id: ("reserved", 0, "token-1"),
+    )
+    baixar = MagicMock()
+    upload = MagicMock()
+    gerar = MagicMock()
+    monkeypatch.setattr(worker, "_baixar_video_temporario", baixar)
+    monkeypatch.setattr(worker.cliente_ia.files, "upload", upload)
+    monkeypatch.setattr(worker.cliente_ia.models, "generate_content", gerar)
+    monkeypatch.setattr(worker, "_obter_vetor_embedding", lambda *_args: [0.1] * 768)
+    persist = MagicMock(return_value=True)
+    monkeypatch.setattr(worker, "persistir_resultado_ia", persist)
+
+    result = worker.processar_anuncio_multimodal(MagicMock(), 7, VIDEO_R2_URL, "copy", analise=_dados_analise())
+
+    assert result["nicho"] == "Beleza"
+    baixar.assert_not_called()
+    upload.assert_not_called()
+    gerar.assert_not_called()
+    assert persist.call_args.args[-1] == "token-1"
+
+
+def test_falha_antes_da_geracao_faz_retry_sem_analise(monkeypatch):
+    import src.worker_ia as worker
+
+    monkeypatch.setattr(
+        worker,
+        "_reservar_oferta_para_processamento",
+        lambda _oferta_id: ("reserved", 0, "token-1"),
+    )
+
+    def _falha(_url):
+        raise RuntimeError("falha no download")
+
+    monkeypatch.setattr(worker, "_baixar_video_temporario", _falha)
+    monkeypatch.setattr(worker, "_liberar_reserva_erro", MagicMock())
+    task_self = MagicMock()
+    task_self.request.retries = 0
+    task_self.max_retries = 3
+    task_self.retry.side_effect = Retry("retry")
+
+    with pytest.raises(Retry):
+        worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
+
+    assert "kwargs" not in task_self.retry.call_args.kwargs
+
+
 def test_parte_video_recorta_os_primeiros_30_segundos():
     import src.worker_ia as worker
 
