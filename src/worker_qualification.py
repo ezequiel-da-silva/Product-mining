@@ -64,6 +64,7 @@ R2_MULTIPART_PART_BYTES = 8 * 1024 * 1024
 R2_PRESIGNED_URL_TTL = 7 * 24 * 60 * 60
 MAX_FALHAS_IA = 3
 MIN_AVISTAMENTOS_IA = 2
+SCORE_DESPACHO_IMEDIATO = 75
 TETO_FALHAS_IA = 5
 ESPERA_REPROCESSAMENTO_IA = timedelta(days=7)
 COMMERCIAL_CTAS = {
@@ -489,7 +490,7 @@ def _pode_despachar_ia(oferta: dict, agora: datetime | None = None) -> bool:
 
 
 def _url_video_ja_analisada(url: str, oferta_id: int) -> bool:
-    """Outra oferta com o mesmo objeto já foi paga ou está em análise."""
+    """Outra oferta com o mesmo objeto já foi paga, está em análise ou tem prioridade na fila."""
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_xact_lock(hashtext(%(url)s)::bigint)", {"url": url})
@@ -499,7 +500,15 @@ def _url_video_ja_analisada(url: str, oferta_id: int) -> bool:
                 FROM ofertas
                 WHERE url_video_r2 = %(url)s
                   AND id <> %(id)s
-                  AND status_qualificacao IN ('concluido', 'processando_ia')
+                  AND (
+                    status_qualificacao IN ('concluido', 'processando_ia')
+                    OR (
+                      id < %(id)s
+                      AND status_qualificacao = 'pendente'
+                      AND score >= 50
+                      AND falhas_ia < 5
+                    )
+                  )
                 LIMIT 1
                 """,
                 {"url": url, "id": oferta_id},
@@ -507,6 +516,49 @@ def _url_video_ja_analisada(url: str, oferta_id: int) -> bool:
             ja_analisada = cur.fetchone() is not None
             conn.commit()
             return ja_analisada
+
+
+def _copiar_enriquecimento(oferta_id: int, url_video_r2: str | None, phash: str | None) -> bool:
+    """Conclui a duplicata com a análise de uma oferta irmã, sem chamar o Gemini."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE ofertas AS destino
+                SET transcricao_video = origem.transcricao_video,
+                    gancho_3s = origem.gancho_3s,
+                    nicho = origem.nicho,
+                    gatilho_mental = origem.gatilho_mental,
+                    preco_oferta_estimado = origem.preco_oferta_estimado,
+                    margem_estimada_pct = origem.margem_estimada_pct,
+                    objecoes_quebradas = origem.objecoes_quebradas,
+                    angulos_alternativos = origem.angulos_alternativos,
+                    embedding_analise = origem.embedding_analise,
+                    embedding_texto_hash = origem.embedding_texto_hash,
+                    score = LEAST(destino.score + 20, 120),
+                    status_qualificacao = 'concluido',
+                    processamento_iniciado_em = NULL,
+                    processamento_token = NULL
+                FROM (
+                    SELECT *
+                    FROM ofertas
+                    WHERE id <> %(id)s
+                      AND status_qualificacao = 'concluido'
+                      AND embedding_analise IS NOT NULL
+                      AND (url_video_r2 = %(url)s OR phash_criativo = %(phash)s)
+                    ORDER BY id
+                    LIMIT 1
+                ) AS origem
+                WHERE destino.id = %(id)s
+                  AND destino.status_qualificacao = 'pendente';
+                """,
+                {"id": oferta_id, "url": url_video_r2, "phash": phash},
+            )
+            enriquecida = cur.rowcount == 1
+            conn.commit()
+    if enriquecida:
+        logger.info("Oferta %s concluída com a análise de uma oferta irmã.", oferta_id)
+    return enriquecida
 
 
 @app.task(bind=True, name="tasks.qualification.avaliar_oferta", max_retries=3)
@@ -546,13 +598,14 @@ def avaliar_oferta(self, payload: dict):
                 "status": "duplicate_creative",
                 "oferta_id": oferta["id"],
                 "score": oferta["score"],
+                "enriquecida": _copiar_enriquecimento(oferta["id"], video_r2_url, phash),
             }
 
         if (
             score >= 50
             and video_r2_url
             and oferta["status_qualificacao"] == "pendente"
-            and (oferta.get("vezes_avistado") or 0) >= MIN_AVISTAMENTOS_IA
+            and ((oferta.get("vezes_avistado") or 0) >= MIN_AVISTAMENTOS_IA or score >= SCORE_DESPACHO_IMEDIATO)
             and _pode_despachar_ia(oferta)
         ):
             if _url_video_ja_analisada(video_r2_url, oferta["id"]):
@@ -560,6 +613,7 @@ def avaliar_oferta(self, payload: dict):
                     "status": "duplicate_video_url",
                     "oferta_id": oferta["id"],
                     "score": oferta["score"],
+                    "enriquecida": _copiar_enriquecimento(oferta["id"], video_r2_url, phash),
                 }
             app.send_task(
                 "src.worker_ia.processar_anuncio_multimodal",

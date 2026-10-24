@@ -260,6 +260,37 @@ def test_primeiro_avistamento_nao_despacha_ia(monkeypatch):
     send_task.assert_not_called()
 
 
+def test_score_75_despacha_no_primeiro_avistamento(monkeypatch):
+    import src.worker_qualification as worker
+
+    monkeypatch.setattr(worker, "_calcular_score", lambda *_args: 75)
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(
+        worker,
+        "_persistir_oferta",
+        lambda *_: {
+            "id": 42,
+            "score": 75,
+            "status_qualificacao": "pendente",
+            "phash_criativo": None,
+            "falhas_ia": 0,
+            "vezes_avistado": 1,
+        },
+    )
+    monkeypatch.setattr(worker, "_url_video_ja_analisada", lambda *_args: False)
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+
+    result = avaliar_oferta.run(_payload_qualificacao())
+
+    assert result["status"] == "qualified"
+    send_task.assert_called_once_with(
+        "src.worker_ia.processar_anuncio_multimodal",
+        args=[42, "https://cdn.test/video.mp4", "Copy"],
+        queue="ai_multimodal_queue",
+    )
+
+
 def test_url_de_video_ja_analisada_nao_despacha_ia(monkeypatch):
     import src.worker_qualification as worker
 
@@ -283,17 +314,59 @@ def test_url_de_video_ja_analisada_nao_despacha_ia(monkeypatch):
     pool = MagicMock()
     pool.connection.return_value.__enter__.return_value = conexao
     monkeypatch.setattr(worker, "get_pool", lambda: pool)
+    copiar = MagicMock(return_value=True)
+    monkeypatch.setattr(worker, "_copiar_enriquecimento", copiar)
     send_task = MagicMock()
     monkeypatch.setattr(worker.app, "send_task", send_task)
 
     result = avaliar_oferta.run(_payload_qualificacao())
 
-    assert result == {"status": "duplicate_video_url", "oferta_id": 42, "score": 55}
+    assert result == {"status": "duplicate_video_url", "oferta_id": 42, "score": 55, "enriquecida": True}
     send_task.assert_not_called()
+    copiar.assert_called_once_with(42, "https://cdn.test/video.mp4", None)
     consulta, params = cursor.execute.call_args_list[1].args
     assert "url_video_r2 = %(url)s" in consulta
     assert "processando_ia" in consulta
+    assert "id < %(id)s" in consulta
+    assert "falhas_ia < 5" in consulta
     assert params == {"url": "https://cdn.test/video.mp4", "id": 42}
+
+
+def test_copiar_enriquecimento_so_conclui_pendente_a_partir_de_irma_concluida(monkeypatch):
+    import src.worker_qualification as worker
+
+    cursor = MagicMock()
+    cursor.rowcount = 1
+    conexao = MagicMock()
+    conexao.cursor.return_value.__enter__.return_value = cursor
+    pool = MagicMock()
+    pool.connection.return_value.__enter__.return_value = conexao
+    monkeypatch.setattr(worker, "get_pool", lambda: pool)
+
+    assert worker._copiar_enriquecimento(42, "https://cdn.test/video.mp4", "cd" * 32) is True
+
+    consulta, params = cursor.execute.call_args.args
+    consulta = " ".join(consulta.split())
+    assert "destino.status_qualificacao = 'pendente'" in consulta
+    assert "AND status_qualificacao = 'concluido'" in consulta
+    assert "embedding_analise = origem.embedding_analise" in consulta
+    assert "score = LEAST(destino.score + 20, 120)" in consulta
+    assert params == {"id": 42, "url": "https://cdn.test/video.mp4", "phash": "cd" * 32}
+    conexao.commit.assert_called_once()
+
+
+def test_copiar_enriquecimento_sem_irma_concluida_nao_conclui(monkeypatch):
+    import src.worker_qualification as worker
+
+    cursor = MagicMock()
+    cursor.rowcount = 0
+    conexao = MagicMock()
+    conexao.cursor.return_value.__enter__.return_value = cursor
+    pool = MagicMock()
+    pool.connection.return_value.__enter__.return_value = conexao
+    monkeypatch.setattr(worker, "get_pool", lambda: pool)
+
+    assert worker._copiar_enriquecimento(42, "https://cdn.test/video.mp4", None) is False
 
 
 def test_mesmo_digest_concluido_nao_despacha_ia(monkeypatch):
@@ -317,6 +390,8 @@ def test_mesmo_digest_concluido_nao_despacha_ia(monkeypatch):
         lambda *_: {"id": 99, "score": 55, "status_qualificacao": "pendente"},
     )
     monkeypatch.setattr(worker, "_deve_analisar", lambda *_args: False)
+    copiar = MagicMock(return_value=False)
+    monkeypatch.setattr(worker, "_copiar_enriquecimento", copiar)
     send_task = MagicMock()
     monkeypatch.setattr(worker.app, "send_task", send_task)
 
@@ -324,6 +399,8 @@ def test_mesmo_digest_concluido_nao_despacha_ia(monkeypatch):
 
     assert result["status"] == "duplicate_creative"
     assert result["oferta_id"] == 99
+    assert result["enriquecida"] is False
+    copiar.assert_called_once_with(99, "https://cdn.test/video.mp4", digest)
     send_task.assert_not_called()
 
 
@@ -344,12 +421,13 @@ def test_recaptura_usa_phash_persistido_para_deduplicar(monkeypatch):
     )
     deve_analisar = MagicMock(return_value=False)
     monkeypatch.setattr(worker, "_deve_analisar", deve_analisar)
+    monkeypatch.setattr(worker, "_copiar_enriquecimento", lambda *_args: True)
     send_task = MagicMock()
     monkeypatch.setattr(worker.app, "send_task", send_task)
 
     result = avaliar_oferta.run(_payload_qualificacao())
 
-    assert result == {"status": "duplicate_creative", "oferta_id": 99, "score": 55}
+    assert result == {"status": "duplicate_creative", "oferta_id": 99, "score": 55, "enriquecida": True}
     deve_analisar.assert_called_once_with("cd" * 32, 99)
     send_task.assert_not_called()
 
@@ -424,6 +502,7 @@ def test_oferta_pendente_mais_antiga_nao_despacha_ia(monkeypatch):
     pool = MagicMock()
     pool.connection.return_value.__enter__.return_value = conexao
     monkeypatch.setattr(worker, "get_pool", lambda: pool)
+    monkeypatch.setattr(worker, "_copiar_enriquecimento", lambda *_args: False)
     send_task = MagicMock()
     monkeypatch.setattr(worker.app, "send_task", send_task)
 
