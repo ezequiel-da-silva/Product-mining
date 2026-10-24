@@ -9,6 +9,10 @@ venv/
 # Segredos locais montados em /run/secrets
 secrets/*
 !secrets/.gitkeep
+!secrets/gemini/
+!secrets/gemini/.gitkeep
+!secrets/r2/
+!secrets/r2/.gitkeep
 
 # Docker/Locais de persistência
 postgres_data/
@@ -17,3 +21,7 @@ redis_data/
 # Logs e ficheiros temporários
 *.log
 .temp/
+
+# Metadados do macOS
+.DS_Store
+**/.DS_Store
