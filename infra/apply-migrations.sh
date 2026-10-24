@@ -26,7 +26,8 @@ for file in \
   infra/migrations/003_ofertas_constraints.sql \
   infra/migrations/004_dashboard_pagination.sql \
   infra/migrations/005_embedding_texto_hash.sql \
-  infra/migrations/006_ofertas_delete.sql
+  infra/migrations/006_ofertas_delete.sql \
+  infra/migrations/007_falhas_ia.sql
 do
   versao=$(basename "$file" .sql)
   applied=$(

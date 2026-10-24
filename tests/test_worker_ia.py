@@ -170,7 +170,8 @@ def test_liberacao_exige_o_token_da_execucao(monkeypatch):
 
     query, params = cursor.execute.call_args.args
     assert "processamento_token = %s" in query
-    assert params == (7, "token-1")
+    assert "falhas_ia = falhas_ia + %s" in query
+    assert params == (0, 7, "token-1")
 
 
 def test_persistencia_descarta_lease_obsoleto(monkeypatch):
@@ -315,7 +316,7 @@ def test_erro_libera_somente_o_token_da_execucao(monkeypatch):
     with pytest.raises(Retry):
         worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
 
-    liberar.assert_called_once_with(7, "token-1")
+    liberar.assert_called_once_with(7, "token-1", False)
     task_self.retry.assert_called_once()
 
 
@@ -342,6 +343,7 @@ def test_value_error_vai_para_dlq_sem_retry(monkeypatch):
     result = worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
 
     assert result == {"status": "dead_letter", "oferta_id": 7}
+    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", True)
     task_self.retry.assert_not_called()
     send_task.assert_not_called()
 
@@ -395,6 +397,7 @@ def test_client_error_429_faz_retry(monkeypatch):
     with pytest.raises(Retry):
         worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
 
+    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", False)
     task_self.retry.assert_called_once()
 
 
@@ -421,6 +424,7 @@ def test_ultima_tentativa_transitoria_vai_para_dlq(monkeypatch):
     result = worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
 
     assert result == {"status": "dead_letter", "oferta_id": 7}
+    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", True)
     task_self.retry.assert_not_called()
     send_task.assert_not_called()
 

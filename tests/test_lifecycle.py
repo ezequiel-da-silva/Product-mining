@@ -8,10 +8,11 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.lifecycle import (  # noqa: E402
+    OFERTA_ELEGIVEL_TRAVADA_SQL,
     OFERTAS_FRACAS_SQL,
     _apagar_objeto,
     _chave_objeto_r2,
-    expirar_ofertas_fracas,
+    _expirar_uma,
 )
 
 
@@ -31,38 +32,62 @@ def test_selecao_limita_ofertas_fracas_e_antigas():
     assert "LIMIT 100" in consulta
 
 
-def test_url_compartilhada_preserva_o_arquivo(monkeypatch):
+def _pool_com_cursor(monkeypatch, cursor):
     import src.lifecycle as lifecycle
 
-    monkeypatch.setattr(lifecycle, "_ofertas_fracas", lambda: [{"id": 7, "url_video_r2": "https://cdn/videos/a.mp4"}])
-    monkeypatch.setattr(lifecycle, "_url_compartilhada", lambda *_args: True)
+    conexao = MagicMock()
+    conexao.cursor.return_value.__enter__.return_value = cursor
+    pool = MagicMock()
+    pool.connection.return_value.__enter__.return_value = conexao
+    monkeypatch.setattr(lifecycle, "pool_db", pool)
+    return conexao
+
+
+def test_oferta_nao_e_expirada_se_deixou_de_ser_elegivel(monkeypatch):
+    cursor = MagicMock()
+    cursor.fetchone.return_value = None
+    conexao = _pool_com_cursor(monkeypatch, cursor)
+
+    assert _expirar_uma({"id": 7}, MagicMock()) is False
+
+    assert "FOR UPDATE SKIP LOCKED" in OFERTA_ELEGIVEL_TRAVADA_SQL
+    conexao.rollback.assert_called_once()
+    assert not any("DELETE FROM ofertas" in call.args[0] for call in cursor.execute.call_args_list)
+
+
+def test_url_compartilhada_preserva_o_arquivo(monkeypatch):
+    cursor = MagicMock()
+    cursor.fetchone.side_effect = [
+        {"id": 7, "url_video_r2": "https://cdn/videos/a.mp4"},
+        {"id": 8},
+    ]
+    conexao = _pool_com_cursor(monkeypatch, cursor)
     apagar_objeto = MagicMock()
-    monkeypatch.setattr(lifecycle, "_apagar_objeto", apagar_objeto)
-    monkeypatch.setattr(lifecycle, "_apagar_linha", lambda oferta_id: oferta_id == 7)
+    monkeypatch.setattr("src.lifecycle._apagar_objeto", apagar_objeto)
+    cursor.rowcount = 1
 
-    resultado = expirar_ofertas_fracas()
+    resultado = _expirar_uma({"id": 7}, MagicMock())
 
-    assert resultado == {"status": "expired", "removidas": 1}
+    assert resultado is True
     apagar_objeto.assert_not_called()
+    assert any("DELETE FROM ofertas" in call.args[0] for call in cursor.execute.call_args_list)
+    conexao.commit.assert_called_once()
 
 
 def test_falha_no_r2_mantem_a_linha(monkeypatch):
-    import src.lifecycle as lifecycle
+    cursor = MagicMock()
+    cursor.fetchone.side_effect = [
+        {"id": 8, "url_video_r2": "https://cdn.example/videos/ad-8.mp4"},
+        None,
+    ]
+    conexao = _pool_com_cursor(monkeypatch, cursor)
+    monkeypatch.setattr("src.lifecycle._apagar_objeto", lambda *_args: False)
 
-    monkeypatch.setattr(
-        lifecycle,
-        "_ofertas_fracas",
-        lambda: [{"id": 8, "url_video_r2": "https://cdn.example/videos/ad-8.mp4"}],
-    )
-    monkeypatch.setattr(lifecycle, "_url_compartilhada", lambda *_args: False)
-    monkeypatch.setattr(lifecycle, "_apagar_objeto", lambda *_args: False)
-    apagar_linha = MagicMock()
-    monkeypatch.setattr(lifecycle, "_apagar_linha", apagar_linha)
+    resultado = _expirar_uma({"id": 8}, MagicMock())
 
-    resultado = expirar_ofertas_fracas()
-
-    assert resultado == {"status": "expired", "removidas": 0}
-    apagar_linha.assert_not_called()
+    assert resultado is False
+    conexao.rollback.assert_called_once()
+    assert not any("DELETE FROM ofertas" in call.args[0] for call in cursor.execute.call_args_list)
 
 
 def test_migracao_003_higieniza_antes_das_constraints():

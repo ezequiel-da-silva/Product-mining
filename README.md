@@ -112,14 +112,17 @@ Senhas colocadas nessas URLs não podem conter `@`, `:`, `/` ou `#`. Recrie só 
 docker compose up -d --no-deps --force-recreate worker-qualification worker-ia dashboard-ui celery-beat
 ```
 
-`GEMINI_API_KEY` e as chaves do R2 podem ficar no `.env`. Se existir um arquivo com o mesmo
-nome em `secrets/` (`secrets/GEMINI_API_KEY` ou `secrets/CLOUDFLARE_R2_SECRET_KEY`), o worker
-e o dashboard que usam a chave leem esse conteúdo e ignoram a variável. Arquivo ausente ou
-vazio mantém o `.env`. Grave o valor novo e recrie só os serviços que leem a chave, sem
-`down -v`:
+`GEMINI_API_KEY` e as chaves do R2 podem ficar no `.env`. Para limitar o acesso por serviço,
+um arquivo não vazio em `secrets/gemini/GEMINI_API_KEY` substitui a variável para o worker de
+IA e o dashboard; arquivos homônimos em `secrets/r2/` substituem as variáveis para a
+qualificação e o lifecycle. Arquivo ausente ou vazio mantém o `.env`. Crie os diretórios e
+copie os valores antes de recriar os serviços, sem `down -v`:
 
 ```bash
-docker compose up -d --no-deps --force-recreate worker-ia dashboard-ui
+mkdir -p secrets/gemini secrets/r2
+printf '%s' "$GEMINI_API_KEY" > secrets/gemini/GEMINI_API_KEY
+printf '%s' "$CLOUDFLARE_R2_SECRET_KEY" > secrets/r2/CLOUDFLARE_R2_SECRET_KEY
+docker compose up -d --no-deps --force-recreate worker-qualification worker-ia celery-beat dashboard-ui
 ```
 
 Configure `CLOUDFLARE_R2_PUBLIC_URL` para obter URLs permanentes dos vídeos. Sem ela,
@@ -148,7 +151,9 @@ as constraints. A migração `006` concede `DELETE` em `ofertas` ao papel `pipel
 Todos os dias, às 03:00, o contêiner `celery-beat` remove ofertas com score abaixo de 40
 cuja última captura tem mais de 30 dias. O vídeo exclusivo é apagado do R2 antes da linha.
 Essa exclusão de mídia é irreversível. Um arquivo ainda referenciado por outra oferta é
-preservado. Se a remoção no R2 falhar, a linha permanece para a tentativa seguinte.
+preservado. A linha é relida sob lock antes de expirar, portanto uma recaptura concorrente
+não remove uma oferta que deixou de atender aos critérios. Se a remoção no R2 falhar, a linha
+permanece para a tentativa seguinte.
 
 
 

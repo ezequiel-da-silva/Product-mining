@@ -5,6 +5,7 @@ import sys
 from urllib.parse import unquote, urlsplit
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from celery.signals import worker_process_init, worker_process_shutdown
 from psycopg.rows import dict_row
@@ -40,6 +41,19 @@ WHERE score < 40
   )
 ORDER BY data_ultima_captura, id
 LIMIT 100
+"""
+
+OFERTA_ELEGIVEL_TRAVADA_SQL = """
+SELECT id, url_video_r2
+FROM ofertas
+WHERE id = %s
+  AND score < 40
+  AND data_ultima_captura < NOW() - INTERVAL '30 days'
+  AND (
+    status_qualificacao <> 'processando_ia'
+    OR processamento_iniciado_em < NOW() - INTERVAL '2 hours'
+  )
+FOR UPDATE SKIP LOCKED
 """
 
 
@@ -90,33 +104,6 @@ def _ofertas_fracas() -> list[dict]:
             return ofertas
 
 
-def _url_compartilhada(oferta_id: int, url: str) -> bool:
-    with get_pool().connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT 1
-                FROM ofertas
-                WHERE url_video_r2 = %s
-                  AND id <> %s
-                LIMIT 1
-                """,
-                (url, oferta_id),
-            )
-            compartilhada = cur.fetchone() is not None
-            conn.commit()
-            return compartilhada
-
-
-def _apagar_linha(oferta_id: int) -> bool:
-    with get_pool().connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM ofertas WHERE id = %s", (oferta_id,))
-            removida = cur.rowcount == 1
-            conn.commit()
-            return removida
-
-
 def _criar_cliente_r2():
     if not all(ler_segredo(nome) for nome in _CHAVES_R2):
         return None
@@ -127,6 +114,11 @@ def _criar_cliente_r2():
         aws_access_key_id=ler_segredo("CLOUDFLARE_R2_ACCESS_KEY"),
         aws_secret_access_key=ler_segredo("CLOUDFLARE_R2_SECRET_KEY"),
         region_name="auto",
+        config=Config(
+            connect_timeout=5,
+            read_timeout=10,
+            retries={"max_attempts": 2, "mode": "standard"},
+        ),
     )
 
 
@@ -150,24 +142,45 @@ def _apagar_objeto(cliente, chave: str) -> bool:
 
 def _expirar_uma(oferta: dict, cliente) -> bool:
     oferta_id = oferta["id"]
-    url = oferta.get("url_video_r2")
-    if isinstance(url, str) and url.strip():
-        if _url_compartilhada(oferta_id, url):
-            if _apagar_linha(oferta_id):
-                logger.info("Oferta %s expirada; arquivo compartilhado preservado.", oferta_id)
-                return True
-            return False
-        chave = _chave_objeto_r2(url)
-        if not chave:
-            logger.warning("Oferta %s mantida: URL de vídeo sem chave videos/<id>.mp4.", oferta_id)
-            return False
-        if not _apagar_objeto(cliente, chave):
-            logger.warning("Oferta %s mantida: falha ao apagar o objeto %s.", oferta_id, chave)
-            return False
-    if _apagar_linha(oferta_id):
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(OFERTA_ELEGIVEL_TRAVADA_SQL, (oferta_id,))
+            oferta_travada = cur.fetchone()
+            if not oferta_travada:
+                conn.rollback()
+                return False
+
+            url = oferta_travada.get("url_video_r2")
+            if isinstance(url, str) and url.strip():
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM ofertas
+                    WHERE url_video_r2 = %s
+                      AND id <> %s
+                    LIMIT 1
+                    """,
+                    (url, oferta_id),
+                )
+                compartilhada = cur.fetchone() is not None
+                if not compartilhada:
+                    chave = _chave_objeto_r2(url)
+                    if not chave:
+                        logger.warning("Oferta %s mantida: URL de vídeo sem chave videos/<id>.mp4.", oferta_id)
+                        conn.rollback()
+                        return False
+                    if not _apagar_objeto(cliente, chave):
+                        logger.warning("Oferta %s mantida: falha ao apagar o objeto %s.", oferta_id, chave)
+                        conn.rollback()
+                        return False
+
+            cur.execute("DELETE FROM ofertas WHERE id = %s", (oferta_id,))
+            removida = cur.rowcount == 1
+            conn.commit()
+
+    if removida:
         logger.info("Oferta %s expirada.", oferta_id)
-        return True
-    return False
+    return removida
 
 
 @app.task(name="tasks.lifecycle.expirar_ofertas_fracas")

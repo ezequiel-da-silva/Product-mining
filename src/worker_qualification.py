@@ -62,6 +62,7 @@ def _close_db_pool(**_kwargs):
 MAX_VIDEO_BYTES = 250 * 1024 * 1024
 R2_MULTIPART_PART_BYTES = 8 * 1024 * 1024
 R2_PRESIGNED_URL_TTL = 7 * 24 * 60 * 60
+MAX_FALHAS_IA = 3
 COMMERCIAL_CTAS = {
     "BUY_NOW",
     "COMPRAR_AGORA",
@@ -455,7 +456,7 @@ def _persistir_oferta(
                     url_video_r2 = COALESCE(EXCLUDED.url_video_r2, ofertas.url_video_r2),
                     score = GREATEST(ofertas.score, EXCLUDED.score),
                     phash_criativo = COALESCE(EXCLUDED.phash_criativo, ofertas.phash_criativo)
-                RETURNING id, score, status_qualificacao;
+                RETURNING id, score, status_qualificacao, phash_criativo, falhas_ia;
                 """,
                 {
                     "url_destino": campos["url_destino"],
@@ -503,14 +504,20 @@ def avaliar_oferta(self, payload: dict):
             logger.error("Upsert não retornou uma oferta para URL %s.", campos["url_destino"])
             raise RuntimeError("O upsert da oferta não retornou o registro persistido.")
 
-        if digest and not _deve_analisar(digest, oferta["id"]):
+        phash = digest or oferta.get("phash_criativo")
+        if phash and not _deve_analisar(phash, oferta["id"]):
             return {
                 "status": "duplicate_creative",
                 "oferta_id": oferta["id"],
                 "score": oferta["score"],
             }
 
-        if score >= 50 and video_r2_url:
+        if (
+            score >= 50
+            and video_r2_url
+            and oferta["status_qualificacao"] == "pendente"
+            and (oferta.get("falhas_ia") or 0) < MAX_FALHAS_IA
+        ):
             app.send_task(
                 "src.worker_ia.processar_anuncio_multimodal",
                 args=[

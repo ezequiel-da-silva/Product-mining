@@ -258,6 +258,61 @@ def test_mesmo_digest_concluido_nao_despacha_ia(monkeypatch):
     send_task.assert_not_called()
 
 
+def test_recaptura_usa_phash_persistido_para_deduplicar(monkeypatch):
+    import src.worker_qualification as worker
+
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(
+        worker,
+        "_persistir_oferta",
+        lambda *_: {
+            "id": 99,
+            "score": 55,
+            "status_qualificacao": "pendente",
+            "phash_criativo": "cd" * 32,
+            "falhas_ia": 0,
+        },
+    )
+    deve_analisar = MagicMock(return_value=False)
+    monkeypatch.setattr(worker, "_deve_analisar", deve_analisar)
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+
+    result = avaliar_oferta.run(_payload_qualificacao())
+
+    assert result == {"status": "duplicate_creative", "oferta_id": 99, "score": 55}
+    deve_analisar.assert_called_once_with("cd" * 32, 99)
+    send_task.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("status", "falhas_ia"),
+    [("concluido", 0), ("processando_ia", 0), ("pendente", 3)],
+)
+def test_oferta_nao_e_redespachada_quando_nao_esta_elegivel(monkeypatch, status, falhas_ia):
+    import src.worker_qualification as worker
+
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(
+        worker,
+        "_persistir_oferta",
+        lambda *_: {
+            "id": 42,
+            "score": 55,
+            "status_qualificacao": status,
+            "phash_criativo": None,
+            "falhas_ia": falhas_ia,
+        },
+    )
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+
+    result = avaliar_oferta.run(_payload_qualificacao())
+
+    assert result["status"] == "qualified"
+    send_task.assert_not_called()
+
+
 def test_oferta_pendente_mais_antiga_nao_despacha_ia(monkeypatch):
     import src.worker_qualification as worker
 

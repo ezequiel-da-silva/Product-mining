@@ -109,7 +109,7 @@ services:
     tmpfs:
       - /tmp:rw,size=256m,mode=1777
     volumes:
-      - ./secrets:/run/secrets:ro
+      - ./secrets/r2:/run/secrets:ro
     deploy:
       resources:
         limits:
@@ -146,7 +146,7 @@ services:
     tmpfs:
       - /tmp:rw,size=1G,mode=1777  # Prevenção de acúmulo de arquivos temporários em disco
     volumes:
-      - ./secrets:/run/secrets:ro
+      - ./secrets/gemini:/run/secrets:ro
     deploy:
       resources:
         limits:
@@ -157,10 +157,6 @@ services:
       - POSTGRES_URL=postgresql://pipeline_writer:${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-mineracao_fb}
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - CLOUDFLARE_R2_ACCOUNT_ID=${CLOUDFLARE_R2_ACCOUNT_ID}
-      - CLOUDFLARE_R2_ACCESS_KEY=${CLOUDFLARE_R2_ACCESS_KEY}
-      - CLOUDFLARE_R2_SECRET_KEY=${CLOUDFLARE_R2_SECRET_KEY}
-      - CLOUDFLARE_R2_BUCKET=${CLOUDFLARE_R2_BUCKET}
       - CLOUDFLARE_R2_PUBLIC_URL=${CLOUDFLARE_R2_PUBLIC_URL}
     depends_on:
       postgres:
@@ -184,7 +180,7 @@ services:
     tmpfs:
       - /tmp:rw,size=64m,mode=1777
     volumes:
-      - ./secrets:/run/secrets:ro
+      - ./secrets/r2:/run/secrets:ro
     deploy:
       resources:
         limits:
@@ -222,7 +218,7 @@ services:
     tmpfs:
       - /tmp:rw,size=256m,mode=1777
     volumes:
-      - ./secrets:/run/secrets:ro
+      - ./secrets/gemini:/run/secrets:ro
     deploy:
       resources:
         limits:

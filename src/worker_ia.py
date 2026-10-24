@@ -149,7 +149,7 @@ def _reservar_oferta_para_processamento(oferta_id: int) -> tuple[str, int, str |
             return "unavailable", 0, None
 
 
-def _liberar_reserva_erro(oferta_id: int, token: str):
+def _liberar_reserva_erro(oferta_id: int, token: str, definitiva: bool = False):
     """Restaura somente a reserva pertencente a esta execução."""
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -158,12 +158,13 @@ def _liberar_reserva_erro(oferta_id: int, token: str):
                 UPDATE ofertas
                 SET status_qualificacao = 'pendente',
                     processamento_iniciado_em = NULL,
-                    processamento_token = NULL
+                    processamento_token = NULL,
+                    falhas_ia = falhas_ia + %s
                 WHERE id = %s
                   AND status_qualificacao = 'processando_ia'
                   AND processamento_token = %s;
                 """,
-                (oferta_id, token),
+                (int(definitiva), oferta_id, token),
             )
             conn.commit()
 
@@ -435,15 +436,16 @@ def _erro_permanente(erro: Exception) -> bool:
 
 
 def _tratar_falha_processamento(task, oferta_id: int, lease_token: str, erro: Exception) -> dict:
+    definitiva = _erro_permanente(erro) or task.request.retries >= task.max_retries
     try:
-        _liberar_reserva_erro(oferta_id, lease_token)
+        _liberar_reserva_erro(oferta_id, lease_token, definitiva)
     except Exception as cleanup_error:
         logger.exception(
             "[Oferta %s] Falha ao liberar reserva após erro: %s",
             oferta_id,
             cleanup_error,
         )
-    if _erro_permanente(erro) or task.request.retries >= task.max_retries:
+    if definitiva:
         logger.error("[Oferta %s] Falha permanente (%s): %s", oferta_id, type(erro).__name__, erro)
         return {"status": "dead_letter", "oferta_id": oferta_id}
 
