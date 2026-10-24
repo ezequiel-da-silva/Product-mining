@@ -1,0 +1,77 @@
+name: Migrations Check
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "infra/migrations/**"
+      - "infra/init-db.sql"
+      - "infra/check_migrations.py"
+      - ".github/workflows/migrations-check.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "infra/migrations/**"
+      - "infra/init-db.sql"
+      - "infra/check_migrations.py"
+      - ".github/workflows/migrations-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: spy_admin
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: mineracao_fb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spy_admin -d mineracao_fb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_USER: spy_admin
+      POSTGRES_DB: mineracao_fb
+      PGHOST: localhost
+      PGPORT: 5432
+      PGPASSWORD: ci_password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validar idempotência e registro em schema_migrations
+        run: python3 infra/check_migrations.py
+
+      - name: Instalar cliente psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Aplicar schema base (infra/init-db.sql)
+        run: psql -v ON_ERROR_STOP=1 -f infra/init-db.sql
+
+      - name: Criar roles pipeline_writer e streamlit_readonly
+        env:
+          PIPELINE_DB_PASSWORD: ci_pipeline_password
+          STREAMLIT_DB_PASSWORD: ci_readonly_password
+        run: |
+          sh infra/init-pipeline-role.sh
+          sh infra/init-readonly-role.sh
+
+      - name: Validar sintaxe de cada migração (BEGIN; ...; ROLLBACK;)
+        run: |
+          set -eu
+          for arquivo in infra/migrations/*.sql; do
+            echo "Validando $arquivo"
+            { echo "BEGIN;"; cat "$arquivo"; echo "ROLLBACK;"; } | psql -v ON_ERROR_STOP=1
+          done
