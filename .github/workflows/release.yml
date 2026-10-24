@@ -1,0 +1,33 @@
+# Release Please: Conventional Commits on `main` → CHANGELOG + version bump PR → tag `vX.Y.Z`.
+# Uses the automatic GITHUB_TOKEN — no extra secret/env var.
+# Required in the GitHub UI (otherwise: "not permitted to create or approve pull requests"):
+#   Settings → Actions → General → Workflow permissions
+#   - "Read and write permissions"
+#   - Enable "Allow GitHub Actions to create and approve pull requests"
+# GITHUB_TOKEN PRs may not trigger other workflows until a human merge.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Release Please
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
