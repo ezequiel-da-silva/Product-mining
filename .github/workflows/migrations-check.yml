@@ -105,8 +105,34 @@ jobs:
             echo "Aplicando $versao sobre o schema da branch base"
             {
               printf 'BEGIN;\n'
+              printf "SET LOCAL lock_timeout = '%s';\n" "${MIGRATION_LOCK_TIMEOUT:-5s}"
               cat "$arquivo"
               printf "INSERT INTO schema_migrations (versao) VALUES ('%s');\n" "$versao"
               printf 'COMMIT;\n'
             } | psql -v ON_ERROR_STOP=1
           done
+
+      - name: Comparar schema novo (init-db.sql) com o schema atualizado
+        if: github.event_name == 'pull_request'
+        run: |
+          set -eu
+          cat > /tmp/schema.sql <<'SQL'
+          SELECT 'col ' || c.relname || '.' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
+                 || ' notnull=' || a.attnotnull || ' default=' || coalesce(pg_get_expr(d.adbin, d.adrelid), '')
+          FROM pg_attribute a
+          JOIN pg_class c ON c.oid = a.attrelid AND c.relkind = 'r'
+          JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+          LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+          WHERE a.attnum > 0 AND NOT a.attisdropped
+          UNION ALL
+          SELECT 'idx ' || indexdef FROM pg_indexes WHERE schemaname = 'public'
+          UNION ALL
+          SELECT 'con ' || conrelid::regclass || ' ' || conname || ' ' || pg_get_constraintdef(oid)
+          FROM pg_constraint WHERE connamespace = 'public'::regnamespace
+          UNION ALL
+          SELECT 'mig ' || versao FROM schema_migrations
+          ORDER BY 1;
+          SQL
+          PGDATABASE=mineracao_fb psql -tA -v ON_ERROR_STOP=1 -f /tmp/schema.sql > /tmp/schema_novo.txt
+          PGDATABASE=upgrade_check psql -tA -v ON_ERROR_STOP=1 -f /tmp/schema.sql > /tmp/schema_upgrade.txt
+          diff -u /tmp/schema_novo.txt /tmp/schema_upgrade.txt
