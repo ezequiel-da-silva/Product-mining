@@ -13,6 +13,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 MIGRATIONS_DIR = BASE_DIR / "infra" / "migrations"
 INIT_DB_SQL = BASE_DIR / "infra" / "init-db.sql"
+APPLY_MIGRATIONS_SH = BASE_DIR / "infra" / "apply-migrations.sh"
 
 IDEMPOTENT_MARKERS = re.compile(r"IF\s+NOT\s+EXISTS|IF\s+EXISTS|ON\s+CONFLICT|DO\s+\$\$", re.IGNORECASE)
 
@@ -38,9 +39,19 @@ def main() -> int:
         print(f"Diretório não encontrado: {MIGRATIONS_DIR}", file=sys.stderr)
         return 1
 
+    if not APPLY_MIGRATIONS_SH.is_file():
+        print(f"Arquivo não encontrado: {APPLY_MIGRATIONS_SH}", file=sys.stderr)
+        return 1
+
     init_db_sql = INIT_DB_SQL.read_text(encoding="utf-8")
+    apply_sh = APPLY_MIGRATIONS_SH.read_text(encoding="utf-8")
     arquivos = sorted(MIGRATIONS_DIR.glob("*.sql"))
     erros: list[str] = []
+
+    numeros = [arquivo.name.split("_", 1)[0] for arquivo in arquivos]
+    duplicados = {numero for numero in numeros if numeros.count(numero) > 1}
+    if duplicados:
+        erros.append(f"Há prefixos numéricos repetidos em infra/migrations: {', '.join(sorted(duplicados))}.")
 
     for arquivo in arquivos:
         versao = arquivo.stem
@@ -59,6 +70,9 @@ def main() -> int:
 
         if f"'{versao}'" not in init_db_sql:
             erros.append(f"{arquivo.name}: versão '{versao}' não está registrada em infra/init-db.sql.")
+
+        if f"infra/migrations/{arquivo.name}" not in apply_sh:
+            erros.append(f"{arquivo.name}: não está na lista de infra/apply-migrations.sh.")
 
     if erros:
         print("Falhas na validação de migrações:", file=sys.stderr)

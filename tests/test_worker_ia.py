@@ -169,9 +169,9 @@ def test_liberacao_exige_o_token_da_execucao(monkeypatch):
     worker._liberar_reserva_erro(7, "token-1")
 
     query, params = cursor.execute.call_args.args
-    assert "processamento_token = %s" in query
-    assert "falhas_ia = falhas_ia + %s" in query
-    assert params == (0, 7, "token-1")
+    assert "processamento_token = %(token)s" in query
+    assert "falhas_ia = falhas_ia + %(incremento)s" in query
+    assert params == {"incremento": 0, "id": 7, "token": "token-1"}
 
 
 def test_persistencia_descarta_lease_obsoleto(monkeypatch):
@@ -400,6 +400,93 @@ def test_client_error_429_faz_retry(monkeypatch):
 
     worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", False)
     task_self.retry.assert_called_once()
+
+
+def test_timeout_na_file_api_faz_retry_em_vez_de_dlq(monkeypatch):
+    import src.worker_ia as worker
+
+    monkeypatch.setattr(
+        worker,
+        "_reservar_oferta_para_processamento",
+        lambda _oferta_id: ("reserved", 0, "token-1"),
+    )
+
+    def _falha(_url):
+        raise TimeoutError("A File API excedeu o limite de 90s.")
+
+    monkeypatch.setattr(worker, "_baixar_video_temporario", _falha)
+    monkeypatch.setattr(worker, "_liberar_reserva_erro", MagicMock())
+    task_self = MagicMock()
+    task_self.request.retries = 0
+    task_self.max_retries = 3
+    task_self.retry.side_effect = Retry("retry")
+
+    with pytest.raises(Retry):
+        worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
+
+    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", False)
+    task_self.retry.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "erro",
+    [
+        ClientError(403, {"error": {"message": "permission denied"}}),
+        ClientError(404, {"error": {"message": "model not found"}}),
+        ClientError(400, {"error": {"message": "API key not valid"}}),
+    ],
+)
+def test_erro_de_configuracao_nao_penaliza_a_oferta(monkeypatch, erro):
+    import src.worker_ia as worker
+
+    monkeypatch.setattr(
+        worker,
+        "_reservar_oferta_para_processamento",
+        lambda _oferta_id: ("reserved", 0, "token-1"),
+    )
+
+    def _falha(_url):
+        raise erro
+
+    monkeypatch.setattr(worker, "_baixar_video_temporario", _falha)
+    monkeypatch.setattr(worker, "_liberar_reserva_erro", MagicMock())
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+    task_self = MagicMock()
+    task_self.request.retries = 0
+    task_self.max_retries = 3
+
+    result = worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
+
+    assert result == {"status": "config_error", "oferta_id": 7}
+    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", False)
+    task_self.retry.assert_not_called()
+    send_task.assert_not_called()
+
+
+def test_client_error_400_sem_api_key_continua_permanente(monkeypatch):
+    import src.worker_ia as worker
+
+    monkeypatch.setattr(
+        worker,
+        "_reservar_oferta_para_processamento",
+        lambda _oferta_id: ("reserved", 0, "token-1"),
+    )
+
+    def _falha(_url):
+        raise ClientError(400, {"error": {"message": "pedido invalido"}})
+
+    monkeypatch.setattr(worker, "_baixar_video_temporario", _falha)
+    monkeypatch.setattr(worker, "_liberar_reserva_erro", MagicMock())
+    task_self = MagicMock()
+    task_self.request.retries = 0
+    task_self.max_retries = 3
+
+    result = worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
+
+    assert result == {"status": "dead_letter", "oferta_id": 7}
+    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", True)
+    task_self.retry.assert_not_called()
 
 
 def test_ultima_tentativa_transitoria_vai_para_dlq(monkeypatch):

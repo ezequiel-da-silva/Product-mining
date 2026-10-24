@@ -17,6 +17,7 @@ with patch("psycopg_pool.ConnectionPool"):
         _enviar_stream_multipart,
         _extrair_payload,
         _host_video_permitido,
+        _pode_despachar_ia,
         _upload_video_r2,
         avaliar_oferta,
     )
@@ -311,6 +312,16 @@ def test_oferta_nao_e_redespachada_quando_nao_esta_elegivel(monkeypatch, status,
 
     assert result["status"] == "qualified"
     send_task.assert_not_called()
+
+
+def test_pode_despachar_ia_libera_apos_espera_com_teto():
+    agora = datetime(2026, 10, 24, tzinfo=timezone.utc)
+
+    assert _pode_despachar_ia({"falhas_ia": 3, "falhas_ia_em": agora - timedelta(days=8)}, agora) is True
+    assert _pode_despachar_ia({"falhas_ia": 3, "falhas_ia_em": agora - timedelta(days=1)}, agora) is False
+    assert _pode_despachar_ia({"falhas_ia": 5, "falhas_ia_em": agora - timedelta(days=30)}, agora) is False
+    assert _pode_despachar_ia({"falhas_ia": 0, "falhas_ia_em": None}, agora) is True
+    assert _pode_despachar_ia({"falhas_ia": 3, "falhas_ia_em": None}, agora) is False
 
 
 def test_oferta_pendente_mais_antiga_nao_despacha_ia(monkeypatch):

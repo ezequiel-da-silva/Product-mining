@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS ofertas (
     processamento_iniciado_em TIMESTAMPTZ,
     processamento_token UUID,
     falhas_ia SMALLINT NOT NULL DEFAULT 0,
+    falhas_ia_em TIMESTAMPTZ,
     CONSTRAINT ofertas_status_qualificacao_check
         CHECK (status_qualificacao IN ('pendente', 'processando_ia', 'concluido')),
     CONSTRAINT ofertas_score_check
@@ -122,5 +123,7 @@ INSERT INTO schema_migrations (versao) VALUES
     ('004_dashboard_pagination'),
     ('005_embedding_texto_hash'),
     ('006_ofertas_delete'),
-    ('007_falhas_ia')
+    ('007_falhas_ia'),
+    ('008_falhas_ia_em'),
+    ('009_revogar_delete_pipeline')
 ON CONFLICT (versao) DO NOTHING;

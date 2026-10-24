@@ -159,12 +159,13 @@ def _liberar_reserva_erro(oferta_id: int, token: str, definitiva: bool = False):
                 SET status_qualificacao = 'pendente',
                     processamento_iniciado_em = NULL,
                     processamento_token = NULL,
-                    falhas_ia = falhas_ia + %s
-                WHERE id = %s
+                    falhas_ia = falhas_ia + %(incremento)s,
+                    falhas_ia_em = CASE WHEN %(incremento)s = 1 THEN CURRENT_TIMESTAMP ELSE falhas_ia_em END
+                WHERE id = %(id)s
                   AND status_qualificacao = 'processando_ia'
-                  AND processamento_token = %s;
+                  AND processamento_token = %(token)s;
                 """,
-                (int(definitiva), oferta_id, token),
+                {"incremento": int(definitiva), "id": oferta_id, "token": token},
             )
             conn.commit()
 
@@ -429,14 +430,25 @@ def _vetor_embedding(resposta) -> list[float]:
 
 
 def _erro_permanente(erro: Exception) -> bool:
-    if isinstance(erro, (ValueError, json.JSONDecodeError, TimeoutError)):
+    if isinstance(erro, (ValueError, json.JSONDecodeError)):
         return True
     codigo = getattr(erro, "code", None)
     return isinstance(erro, ClientError) and isinstance(codigo, int) and codigo != 429
 
 
+def _erro_configuracao(erro: Exception) -> bool:
+    """Chave inválida, permissão negada ou modelo inexistente: não é culpa da oferta."""
+    if not isinstance(erro, ClientError):
+        return False
+    if erro.code in (401, 403, 404):
+        return True
+    texto = f"{getattr(erro, 'status', '') or ''} {getattr(erro, 'message', '') or ''}".upper()
+    return erro.code == 400 and ("API_KEY" in texto or "API KEY" in texto)
+
+
 def _tratar_falha_processamento(task, oferta_id: int, lease_token: str, erro: Exception) -> dict:
-    definitiva = _erro_permanente(erro) or task.request.retries >= task.max_retries
+    configuracao = _erro_configuracao(erro)
+    definitiva = not configuracao and (_erro_permanente(erro) or task.request.retries >= task.max_retries)
     try:
         _liberar_reserva_erro(oferta_id, lease_token, definitiva)
     except Exception as cleanup_error:
@@ -445,6 +457,13 @@ def _tratar_falha_processamento(task, oferta_id: int, lease_token: str, erro: Ex
             oferta_id,
             cleanup_error,
         )
+    if configuracao:
+        logger.critical(
+            "[Oferta %s] Erro de configuração do Gemini; oferta não penalizada: %s",
+            oferta_id,
+            erro,
+        )
+        return {"status": "config_error", "oferta_id": oferta_id}
     if definitiva:
         logger.error("[Oferta %s] Falha permanente (%s): %s", oferta_id, type(erro).__name__, erro)
         return {"status": "dead_letter", "oferta_id": oferta_id}

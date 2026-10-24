@@ -94,23 +94,46 @@ executados na primeira inicialização do volume):
 ./infra/apply-migrations.sh
 docker compose exec -T postgres /docker-entrypoint-initdb.d/zz-readonly-role.sh
 docker compose exec -T postgres /docker-entrypoint-initdb.d/zz-pipeline-role.sh
+docker compose exec -T postgres /docker-entrypoint-initdb.d/zz-lifecycle-role.sh
 ```
 
-Para trocar a senha de `pipeline_writer` ou `streamlit_readonly` em um volume que já existe,
-aplique o `ALTER ROLE` antes de recriar os serviços. A ordem inversa derruba a conexão até o
-recreate. Não use `docker compose down -v`: isso apaga o volume `postgres_data`.
+Para trocar a senha de `pipeline_writer`, `lifecycle_writer` ou `streamlit_readonly` em um
+volume que já existe, aplique o `ALTER ROLE` antes de recriar os serviços. A ordem inversa
+derruba a conexão até o recreate. Não use `docker compose down -v`: isso apaga o volume
+`postgres_data`.
 
 ```bash
 ./infra/rotate-role-password.sh pipeline_writer 'senha-nova'
+./infra/rotate-role-password.sh lifecycle_writer 'senha-nova'
 ./infra/rotate-role-password.sh streamlit_readonly 'senha-nova'
 ```
 
-Atualize `PIPELINE_DB_PASSWORD` e `STREAMLIT_DB_PASSWORD` no `.env` com os mesmos valores.
-Senhas colocadas nessas URLs não podem conter `@`, `:`, `/` ou `#`. Recrie só quem usa essas URLs:
+Atualize `PIPELINE_DB_PASSWORD`, `LIFECYCLE_DB_PASSWORD` e `STREAMLIT_DB_PASSWORD` no `.env`
+com os mesmos valores. Senhas colocadas nessas URLs não podem conter `@`, `:`, `/` ou `#`.
+Recrie só quem usa essas URLs:
 
 ```bash
 docker compose up -d --no-deps --force-recreate worker-qualification worker-ia dashboard-ui celery-beat
 ```
+
+### Papel `lifecycle_writer` em um volume já existente
+
+A partir da migração `009`, o `pipeline_writer` perde `DELETE` em `ofertas`; só o
+`lifecycle_writer` (usado pelo `celery-beat`) pode apagar linhas. Em um volume criado antes
+dessa mudança, defina `LIFECYCLE_DB_PASSWORD` no `.env` e aplique, nesta ordem, sem
+`down -v`:
+
+```bash
+docker compose up -d --no-deps --force-recreate postgres
+docker compose exec -T postgres /docker-entrypoint-initdb.d/zz-lifecycle-role.sh
+docker compose up -d --no-deps --force-recreate celery-beat
+./infra/apply-migrations.sh
+```
+
+Recriar o `postgres` apenas carrega o novo volume montado do script (ele não é executado de
+novo automaticamente); o `zz-lifecycle-role.sh` cria o papel, e só então o `celery-beat` deve
+ser recriado para passar a usar `lifecycle_writer`. Por fim, `apply-migrations.sh` aplica a
+`009` e revoga `DELETE` de `pipeline_writer`.
 
 `GEMINI_API_KEY` e as chaves do R2 podem ficar no `.env`. Para limitar o acesso por serviço,
 um arquivo não vazio em `secrets/gemini/GEMINI_API_KEY` substitui a variável para o worker de
@@ -144,7 +167,9 @@ Em um volume PostgreSQL já existente, aplique as migrações pendentes com:
 
 O comando preserva `postgres_data`. Ele registra as versões novas e, se a migração `003`
 ainda não tiver sido gravada, corrige status, score, margem e preço inválidos antes de criar
-as constraints. A migração `006` concede `DELETE` em `ofertas` ao papel `pipeline_writer`.
+as constraints. A migração `006` concede `DELETE` em `ofertas` ao papel `pipeline_writer`; a
+migração `009` revoga esse `DELETE`, pois a partir dela só o `lifecycle_writer` apaga linhas
+(veja "Papel `lifecycle_writer` em um volume já existente" acima).
 
 ## Expiração de ofertas fracas
 

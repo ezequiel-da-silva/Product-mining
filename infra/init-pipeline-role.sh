@@ -31,5 +31,7 @@ $$;
 
 GRANT CONNECT ON DATABASE :"dbname" TO pipeline_writer;
 GRANT USAGE ON SCHEMA public TO pipeline_writer;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ofertas TO pipeline_writer;
+-- DELETE não é concedido: qualification/IA não apagam ofertas (ver lifecycle_writer).
+GRANT SELECT, INSERT, UPDATE ON TABLE ofertas TO pipeline_writer;
+REVOKE DELETE ON TABLE ofertas FROM pipeline_writer;
 SQL

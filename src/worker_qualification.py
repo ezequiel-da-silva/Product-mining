@@ -6,7 +6,7 @@ import re
 import socket
 import sys
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlsplit
 
 import boto3
@@ -63,6 +63,8 @@ MAX_VIDEO_BYTES = 250 * 1024 * 1024
 R2_MULTIPART_PART_BYTES = 8 * 1024 * 1024
 R2_PRESIGNED_URL_TTL = 7 * 24 * 60 * 60
 MAX_FALHAS_IA = 3
+TETO_FALHAS_IA = 5
+ESPERA_REPROCESSAMENTO_IA = timedelta(days=7)
 COMMERCIAL_CTAS = {
     "BUY_NOW",
     "COMPRAR_AGORA",
@@ -456,7 +458,7 @@ def _persistir_oferta(
                     url_video_r2 = COALESCE(EXCLUDED.url_video_r2, ofertas.url_video_r2),
                     score = GREATEST(ofertas.score, EXCLUDED.score),
                     phash_criativo = COALESCE(EXCLUDED.phash_criativo, ofertas.phash_criativo)
-                RETURNING id, score, status_qualificacao, phash_criativo, falhas_ia;
+                RETURNING id, score, status_qualificacao, phash_criativo, falhas_ia, falhas_ia_em;
                 """,
                 {
                     "url_destino": campos["url_destino"],
@@ -471,6 +473,18 @@ def _persistir_oferta(
             oferta = cur.fetchone()
             conn.commit()
             return oferta
+
+
+def _pode_despachar_ia(oferta: dict, agora: datetime | None = None) -> bool:
+    """Permite até MAX_FALHAS_IA sem espera; depois disso, só reprocessa com teto e espera."""
+    falhas = oferta.get("falhas_ia") or 0
+    if falhas < MAX_FALHAS_IA:
+        return True
+    if falhas >= TETO_FALHAS_IA:
+        return False
+    ultima = oferta.get("falhas_ia_em")
+    agora = agora or datetime.now(timezone.utc)
+    return ultima is not None and agora - ultima >= ESPERA_REPROCESSAMENTO_IA
 
 
 @app.task(bind=True, name="tasks.qualification.avaliar_oferta", max_retries=3)
@@ -512,12 +526,7 @@ def avaliar_oferta(self, payload: dict):
                 "score": oferta["score"],
             }
 
-        if (
-            score >= 50
-            and video_r2_url
-            and oferta["status_qualificacao"] == "pendente"
-            and (oferta.get("falhas_ia") or 0) < MAX_FALHAS_IA
-        ):
+        if score >= 50 and video_r2_url and oferta["status_qualificacao"] == "pendente" and _pode_despachar_ia(oferta):
             app.send_task(
                 "src.worker_ia.processar_anuncio_multimodal",
                 args=[

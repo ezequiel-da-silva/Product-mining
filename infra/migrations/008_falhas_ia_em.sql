@@ -1,0 +1,2 @@
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS falhas_ia_em TIMESTAMPTZ;

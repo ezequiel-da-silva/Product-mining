@@ -1,11 +1,11 @@
 #!/bin/sh
 set -eu
 
-role="${1:?role: pipeline_writer ou streamlit_readonly}"
+role="${1:?role: pipeline_writer, lifecycle_writer ou streamlit_readonly}"
 password="${2:?nova senha}"
 
 case "$role" in
-  pipeline_writer|streamlit_readonly) ;;
+  pipeline_writer|lifecycle_writer|streamlit_readonly) ;;
   *) echo "role não permitida" >&2; exit 1 ;;
 esac
 
