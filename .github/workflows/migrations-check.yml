@@ -7,6 +7,10 @@ on:
       - "infra/migrations/**"
       - "infra/init-db.sql"
       - "infra/check_migrations.py"
+      - "infra/apply-migrations.sh"
+      - "infra/init-pipeline-role.sh"
+      - "infra/init-lifecycle-role.sh"
+      - "infra/init-readonly-role.sh"
       - ".github/workflows/migrations-check.yml"
   pull_request:
     branches: [ main ]
@@ -14,6 +18,10 @@ on:
       - "infra/migrations/**"
       - "infra/init-db.sql"
       - "infra/check_migrations.py"
+      - "infra/apply-migrations.sh"
+      - "infra/init-pipeline-role.sh"
+      - "infra/init-lifecycle-role.sh"
+      - "infra/init-readonly-role.sh"
       - ".github/workflows/migrations-check.yml"
 
 permissions:
@@ -60,12 +68,14 @@ jobs:
       - name: Aplicar schema base (infra/init-db.sql)
         run: psql -v ON_ERROR_STOP=1 -f infra/init-db.sql
 
-      - name: Criar roles pipeline_writer e streamlit_readonly
+      - name: Criar roles pipeline_writer, lifecycle_writer e streamlit_readonly
         env:
           PIPELINE_DB_PASSWORD: ci_pipeline_password
+          LIFECYCLE_DB_PASSWORD: ci_lifecycle_password
           STREAMLIT_DB_PASSWORD: ci_readonly_password
         run: |
           sh infra/init-pipeline-role.sh
+          sh infra/init-lifecycle-role.sh
           sh infra/init-readonly-role.sh
 
       - name: Validar sintaxe de cada migração (BEGIN; ...; ROLLBACK;)
@@ -74,4 +84,29 @@ jobs:
           for arquivo in infra/migrations/*.sql; do
             echo "Validando $arquivo"
             { echo "BEGIN;"; cat "$arquivo"; echo "ROLLBACK;"; } | psql -v ON_ERROR_STOP=1
+          done
+
+      - name: Atualizar a partir do schema da branch base (como um volume existente)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -eu
+          git fetch --depth=1 origin "${{ github.base_ref }}"
+          git show FETCH_HEAD:infra/init-db.sql > /tmp/init-db-base.sql
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE upgrade_check"
+          export PGDATABASE=upgrade_check
+          psql -v ON_ERROR_STOP=1 -f /tmp/init-db-base.sql
+          for arquivo in $(sed -n 's#^[[:space:]]*\(infra/migrations/[^[:space:]]*\.sql\).*#\1#p' infra/apply-migrations.sh); do
+            versao=$(basename "$arquivo" .sql)
+            aplicada=$(psql -tA -v ON_ERROR_STOP=1 -c "SELECT 1 FROM schema_migrations WHERE versao = '$versao'")
+            if [ "$aplicada" = "1" ]; then
+              echo "já aplicada sobre o schema base: $versao"
+              continue
+            fi
+            echo "Aplicando $versao sobre o schema da branch base"
+            {
+              printf 'BEGIN;\n'
+              cat "$arquivo"
+              printf "INSERT INTO schema_migrations (versao) VALUES ('%s');\n" "$versao"
+              printf 'COMMIT;\n'
+            } | psql -v ON_ERROR_STOP=1
           done
