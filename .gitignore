@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.env
+
+# Segredos locais montados em /run/secrets
+secrets/*
+!secrets/.gitkeep
+
+# Docker/Locais de persistência
+postgres_data/
+redis_data/
+
+# Logs e ficheiros temporários
+*.log
+.temp/
