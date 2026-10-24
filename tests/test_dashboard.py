@@ -20,6 +20,7 @@ from src.dashboard import (
     ROTULOS_OFERTAS,
     TITULO_OFERTAS_RECENTES,
     TITULO_PAINEL,
+    _normalizar_frase_busca,
     _reiniciar_listagem,
     _vetor_embedding,
     colunas_ofertas_recentes,
@@ -71,6 +72,10 @@ def _conexao_com_linhas(linhas):
     conexao = MagicMock()
     conexao.cursor.return_value.__enter__.return_value = cursor
     return conexao, cursor
+
+
+def test_normalizar_frase_busca_ignora_espaco_e_maiuscula():
+    assert _normalizar_frase_busca(" Emagrecimento ") == "emagrecimento"
 
 
 def test_embedding_de_busca_usa_retrieval_query_e_768_dimensoes(monkeypatch):

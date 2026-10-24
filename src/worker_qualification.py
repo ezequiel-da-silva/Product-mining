@@ -63,6 +63,7 @@ MAX_VIDEO_BYTES = 250 * 1024 * 1024
 R2_MULTIPART_PART_BYTES = 8 * 1024 * 1024
 R2_PRESIGNED_URL_TTL = 7 * 24 * 60 * 60
 MAX_FALHAS_IA = 3
+MIN_AVISTAMENTOS_IA = 2
 TETO_FALHAS_IA = 5
 ESPERA_REPROCESSAMENTO_IA = timedelta(days=7)
 COMMERCIAL_CTAS = {
@@ -458,7 +459,7 @@ def _persistir_oferta(
                     url_video_r2 = COALESCE(EXCLUDED.url_video_r2, ofertas.url_video_r2),
                     score = GREATEST(ofertas.score, EXCLUDED.score),
                     phash_criativo = COALESCE(EXCLUDED.phash_criativo, ofertas.phash_criativo)
-                RETURNING id, score, status_qualificacao, phash_criativo, falhas_ia, falhas_ia_em;
+                RETURNING id, score, status_qualificacao, phash_criativo, falhas_ia, falhas_ia_em, vezes_avistado;
                 """,
                 {
                     "url_destino": campos["url_destino"],
@@ -485,6 +486,27 @@ def _pode_despachar_ia(oferta: dict, agora: datetime | None = None) -> bool:
     ultima = oferta.get("falhas_ia_em")
     agora = agora or datetime.now(timezone.utc)
     return ultima is not None and agora - ultima >= ESPERA_REPROCESSAMENTO_IA
+
+
+def _url_video_ja_analisada(url: str, oferta_id: int) -> bool:
+    """Outra oferta com o mesmo objeto já foi paga ou está em análise."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%(url)s)::bigint)", {"url": url})
+            cur.execute(
+                """
+                SELECT 1
+                FROM ofertas
+                WHERE url_video_r2 = %(url)s
+                  AND id <> %(id)s
+                  AND status_qualificacao IN ('concluido', 'processando_ia')
+                LIMIT 1
+                """,
+                {"url": url, "id": oferta_id},
+            )
+            ja_analisada = cur.fetchone() is not None
+            conn.commit()
+            return ja_analisada
 
 
 @app.task(bind=True, name="tasks.qualification.avaliar_oferta", max_retries=3)
@@ -526,7 +548,19 @@ def avaliar_oferta(self, payload: dict):
                 "score": oferta["score"],
             }
 
-        if score >= 50 and video_r2_url and oferta["status_qualificacao"] == "pendente" and _pode_despachar_ia(oferta):
+        if (
+            score >= 50
+            and video_r2_url
+            and oferta["status_qualificacao"] == "pendente"
+            and (oferta.get("vezes_avistado") or 0) >= MIN_AVISTAMENTOS_IA
+            and _pode_despachar_ia(oferta)
+        ):
+            if _url_video_ja_analisada(video_r2_url, oferta["id"]):
+                return {
+                    "status": "duplicate_video_url",
+                    "oferta_id": oferta["id"],
+                    "score": oferta["score"],
+                }
             app.send_task(
                 "src.worker_ia.processar_anuncio_multimodal",
                 args=[

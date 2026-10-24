@@ -125,6 +125,10 @@ def _vetor_embedding(resposta) -> list[float]:
     return vetor
 
 
+def _normalizar_frase_busca(frase: str) -> str:
+    return frase.strip().casefold()
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def gerar_embedding_busca(frase: str) -> list[float]:
     resposta = init_embedding_client().models.embed_content(
@@ -271,7 +275,7 @@ def main() -> None:
             buscar = st.form_submit_button("Buscar")
 
         if buscar:
-            frase = frase.strip()
+            frase = _normalizar_frase_busca(frase)
             vetor = gerar_embedding_busca(frase) if frase else None
             _reiniciar_listagem(frase, vetor)
 

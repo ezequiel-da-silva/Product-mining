@@ -213,8 +213,15 @@ def test_score_50_com_video_persistido_despacha_para_ia(monkeypatch):
     monkeypatch.setattr(
         worker,
         "_persistir_oferta",
-        lambda *_: {"id": 42, "score": 55, "status_qualificacao": "pendente"},
+        lambda *_: {
+            "id": 42,
+            "score": 55,
+            "status_qualificacao": "pendente",
+            "vezes_avistado": 2,
+            "falhas_ia": 0,
+        },
     )
+    monkeypatch.setattr(worker, "_url_video_ja_analisada", lambda *_args: False)
     send_task = MagicMock()
     monkeypatch.setattr(worker.app, "send_task", send_task)
 
@@ -226,6 +233,67 @@ def test_score_50_com_video_persistido_despacha_para_ia(monkeypatch):
         args=[42, "https://cdn.test/video.mp4", "Copy"],
         queue="ai_multimodal_queue",
     )
+
+
+def test_primeiro_avistamento_nao_despacha_ia(monkeypatch):
+    import src.worker_qualification as worker
+
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(
+        worker,
+        "_persistir_oferta",
+        lambda *_: {
+            "id": 42,
+            "score": 55,
+            "status_qualificacao": "pendente",
+            "phash_criativo": None,
+            "falhas_ia": 0,
+            "vezes_avistado": 1,
+        },
+    )
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+
+    result = avaliar_oferta.run(_payload_qualificacao())
+
+    assert result["status"] == "qualified"
+    send_task.assert_not_called()
+
+
+def test_url_de_video_ja_analisada_nao_despacha_ia(monkeypatch):
+    import src.worker_qualification as worker
+
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(
+        worker,
+        "_persistir_oferta",
+        lambda *_: {
+            "id": 42,
+            "score": 55,
+            "status_qualificacao": "pendente",
+            "phash_criativo": None,
+            "falhas_ia": 0,
+            "vezes_avistado": 2,
+        },
+    )
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (1,)
+    conexao = MagicMock()
+    conexao.cursor.return_value.__enter__.return_value = cursor
+    pool = MagicMock()
+    pool.connection.return_value.__enter__.return_value = conexao
+    monkeypatch.setattr(worker, "get_pool", lambda: pool)
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+
+    result = avaliar_oferta.run(_payload_qualificacao())
+
+    assert result == {"status": "duplicate_video_url", "oferta_id": 42, "score": 55}
+    send_task.assert_not_called()
+    consulta, params = cursor.execute.call_args_list[1].args
+    assert "url_video_r2 = %(url)s" in consulta
+    assert "processando_ia" in consulta
+    assert params == {"url": "https://cdn.test/video.mp4", "id": 42}
 
 
 def test_mesmo_digest_concluido_nao_despacha_ia(monkeypatch):
