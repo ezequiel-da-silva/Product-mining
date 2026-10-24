@@ -529,8 +529,8 @@ def _copiar_enriquecimento(oferta_id: int, url_video_r2: str | None, phash: str 
                     gancho_3s = origem.gancho_3s,
                     nicho = origem.nicho,
                     gatilho_mental = origem.gatilho_mental,
-                    preco_oferta_estimado = origem.preco_oferta_estimado,
-                    margem_estimada_pct = origem.margem_estimada_pct,
+                    preco_oferta_estimado = NULL,
+                    margem_estimada_pct = NULL,
                     objecoes_quebradas = origem.objecoes_quebradas,
                     angulos_alternativos = origem.angulos_alternativos,
                     embedding_analise = origem.embedding_analise,
@@ -624,10 +624,12 @@ def avaliar_oferta(self, payload: dict):
                 ],
                 queue="ai_multimodal_queue",
             )
+            motivo = "avistamentos" if (oferta.get("vezes_avistado") or 0) >= MIN_AVISTAMENTOS_IA else "score_75"
             logger.info(
-                "Oferta %s (score %s) despachada para processamento multimodal.",
+                "Oferta %s (score %s) despachada para processamento multimodal; motivo=%s.",
                 oferta["id"],
                 score,
+                motivo,
             )
 
         return {

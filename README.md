@@ -178,6 +178,33 @@ as constraints. A migração `006` concede `DELETE` em `ofertas` ao papel `pipel
 migração `009` revoga esse `DELETE`, pois a partir dela só o `lifecycle_writer` apaga linhas
 (veja "Papel `lifecycle_writer` em um volume já existente" acima).
 
+## Ofertas com o mesmo vídeo
+
+Uma oferta cujo vídeo (mesma URL no R2 ou mesmo hash do criativo) já foi analisado herda a
+análise da irmã sem chamar o Gemini: transcrição, gancho, nicho, gatilho, objeções, ângulo e
+embedding. Preço e margem ficam vazios, porque a irmã aponta para outra página de destino.
+Quando a IA conclui uma oferta, as irmãs ainda pendentes recebem a análise na mesma
+transação.
+
+Ofertas herdadas antes dessa regra podem exibir o preço de outra loja. A consulta abaixo é
+opcional, altera dados de produção e não roda automaticamente: ela limpa preço e margem das
+concluídas que compartilham o texto analisado com uma irmã concluída mais antiga.
+
+```bash
+docker compose exec -T postgres psql -U spy_admin -d mineracao_fb -c "
+UPDATE ofertas AS copia
+SET preco_oferta_estimado = NULL, margem_estimada_pct = NULL
+WHERE copia.status_qualificacao = 'concluido'
+  AND (copia.preco_oferta_estimado IS NOT NULL OR copia.margem_estimada_pct IS NOT NULL)
+  AND EXISTS (
+    SELECT 1 FROM ofertas AS origem
+    WHERE origem.id < copia.id
+      AND origem.status_qualificacao = 'concluido'
+      AND origem.embedding_texto_hash = copia.embedding_texto_hash
+      AND (origem.url_video_r2 = copia.url_video_r2 OR origem.phash_criativo = copia.phash_criativo)
+  );"
+```
+
 ## Expiração de ofertas fracas
 
 Todos os dias, às 03:00, o contêiner `celery-beat` remove ofertas com score abaixo de 40

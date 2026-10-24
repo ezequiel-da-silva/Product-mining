@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS ofertas (
     objecoes_quebradas JSONB,       -- Lista estruturada de objeções resolvidas
     angulos_alternativos JSONB,     -- 3 ângulos sugeridos pela IA para testes A/B
     custo_tokens_ia NUMERIC(8, 4) DEFAULT 0.0000,
+    tokens_prompt_ia INTEGER,
+    tokens_saida_ia INTEGER,
     embedding_analise vector(768),
     embedding_texto_hash VARCHAR(64),
 
@@ -125,5 +127,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('006_ofertas_delete'),
     ('007_falhas_ia'),
     ('008_falhas_ia_em'),
-    ('009_revogar_delete_pipeline')
+    ('009_revogar_delete_pipeline'),
+    ('010_tokens_ia')
 ON CONFLICT (versao) DO NOTHING;

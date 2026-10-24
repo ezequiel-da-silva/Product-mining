@@ -196,7 +196,7 @@ def test_persistencia_usa_upsert_e_incrementa_avistamentos(monkeypatch):
     mock_conn.commit.assert_called_once()
 
 
-def test_score_50_com_video_persistido_despacha_para_ia(monkeypatch):
+def test_score_50_com_video_persistido_despacha_para_ia(monkeypatch, caplog):
     import src.worker_qualification as worker
 
     payload = {
@@ -225,7 +225,8 @@ def test_score_50_com_video_persistido_despacha_para_ia(monkeypatch):
     send_task = MagicMock()
     monkeypatch.setattr(worker.app, "send_task", send_task)
 
-    result = avaliar_oferta.run(payload)
+    with caplog.at_level(logging.INFO):
+        result = avaliar_oferta.run(payload)
 
     assert result["oferta_id"] == 42
     send_task.assert_called_once_with(
@@ -233,6 +234,7 @@ def test_score_50_com_video_persistido_despacha_para_ia(monkeypatch):
         args=[42, "https://cdn.test/video.mp4", "Copy"],
         queue="ai_multimodal_queue",
     )
+    assert "motivo=avistamentos" in caplog.text
 
 
 def test_primeiro_avistamento_nao_despacha_ia(monkeypatch):
@@ -260,7 +262,7 @@ def test_primeiro_avistamento_nao_despacha_ia(monkeypatch):
     send_task.assert_not_called()
 
 
-def test_score_75_despacha_no_primeiro_avistamento(monkeypatch):
+def test_score_75_despacha_no_primeiro_avistamento(monkeypatch, caplog):
     import src.worker_qualification as worker
 
     monkeypatch.setattr(worker, "_calcular_score", lambda *_args: 75)
@@ -281,7 +283,8 @@ def test_score_75_despacha_no_primeiro_avistamento(monkeypatch):
     send_task = MagicMock()
     monkeypatch.setattr(worker.app, "send_task", send_task)
 
-    result = avaliar_oferta.run(_payload_qualificacao())
+    with caplog.at_level(logging.INFO):
+        result = avaliar_oferta.run(_payload_qualificacao())
 
     assert result["status"] == "qualified"
     send_task.assert_called_once_with(
@@ -289,6 +292,7 @@ def test_score_75_despacha_no_primeiro_avistamento(monkeypatch):
         args=[42, "https://cdn.test/video.mp4", "Copy"],
         queue="ai_multimodal_queue",
     )
+    assert "motivo=score_75" in caplog.text
 
 
 def test_url_de_video_ja_analisada_nao_despacha_ia(monkeypatch):
@@ -351,6 +355,9 @@ def test_copiar_enriquecimento_so_conclui_pendente_a_partir_de_irma_concluida(mo
     assert "AND status_qualificacao = 'concluido'" in consulta
     assert "embedding_analise = origem.embedding_analise" in consulta
     assert "score = LEAST(destino.score + 20, 120)" in consulta
+    assert "preco_oferta_estimado = NULL" in consulta
+    assert "margem_estimada_pct = NULL" in consulta
+    assert "origem.preco_oferta_estimado" not in consulta
     assert params == {"id": 42, "url": "https://cdn.test/video.mp4", "phash": "cd" * 32}
     conexao.commit.assert_called_once()
 

@@ -170,9 +170,40 @@ def _liberar_reserva_erro(oferta_id: int, token: str, definitiva: bool = False):
             conn.commit()
 
 
-def persistir_resultado_ia(oferta_id: int, dados: dict, embedding: list, token: str) -> bool:
+SQL_PROPAGAR_IRMAS = """
+UPDATE ofertas AS irma
+SET transcricao_video = origem.transcricao_video,
+    gancho_3s = origem.gancho_3s,
+    nicho = origem.nicho,
+    gatilho_mental = origem.gatilho_mental,
+    preco_oferta_estimado = NULL,
+    margem_estimada_pct = NULL,
+    objecoes_quebradas = origem.objecoes_quebradas,
+    angulos_alternativos = origem.angulos_alternativos,
+    embedding_analise = origem.embedding_analise,
+    embedding_texto_hash = origem.embedding_texto_hash,
+    score = LEAST(irma.score + 20, 120),
+    status_qualificacao = 'concluido',
+    processamento_iniciado_em = NULL,
+    processamento_token = NULL
+FROM ofertas AS origem
+WHERE origem.id = %(id)s
+  AND irma.id <> origem.id
+  AND irma.status_qualificacao = 'pendente'
+  AND (irma.url_video_r2 = origem.url_video_r2 OR irma.phash_criativo = origem.phash_criativo);
+"""
+
+
+def persistir_resultado_ia(
+    oferta_id: int,
+    dados: dict,
+    embedding: list,
+    token: str,
+    uso_tokens: dict | None = None,
+) -> bool:
     """Grava o enriquecimento somente se esta execução ainda possui a reserva."""
     embedding_str = f"[{','.join(map(str, embedding))}]"
+    uso_tokens = uso_tokens or {}
 
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -189,6 +220,8 @@ def persistir_resultado_ia(oferta_id: int, dados: dict, embedding: list, token: 
                     angulos_alternativos = %(angulos)s::jsonb,
                     embedding_analise = %(embedding)s::vector,
                     embedding_texto_hash = %(embedding_texto_hash)s,
+                    tokens_prompt_ia = %(tokens_prompt)s,
+                    tokens_saida_ia = %(tokens_saida)s,
                     score = CASE
                         WHEN status_qualificacao != 'concluido' THEN score + 20
                         ELSE score
@@ -210,13 +243,21 @@ def persistir_resultado_ia(oferta_id: int, dados: dict, embedding: list, token: 
                     "angulos": json.dumps(dados.get("angulos_alternativos", [])),
                     "embedding": embedding_str,
                     "embedding_texto_hash": _hash_texto_embedding(_texto_embedding(dados)),
+                    "tokens_prompt": uso_tokens.get("prompt"),
+                    "tokens_saida": uso_tokens.get("saida"),
                     "token": token,
                     "id": oferta_id,
                 },
             )
             persisted = cur.rowcount == 1
+            irmas = 0
+            if persisted:
+                cur.execute(SQL_PROPAGAR_IRMAS, {"id": oferta_id})
+                irmas = cur.rowcount
             conn.commit()
-            return persisted
+    if irmas > 0:
+        logger.info("Oferta %s propagou a análise para %s irmãs.", oferta_id, irmas)
+    return persisted
 
 
 def _hosts_r2_permitidos() -> set[str]:
@@ -452,6 +493,7 @@ def _tratar_falha_processamento(
     lease_token: str,
     erro: Exception,
     analise: dict | None = None,
+    uso_tokens: dict | None = None,
 ) -> dict:
     configuracao = _erro_configuracao(erro)
     definitiva = not configuracao and (_erro_permanente(erro) or task.request.retries >= task.max_retries)
@@ -475,7 +517,7 @@ def _tratar_falha_processamento(
         return {"status": "dead_letter", "oferta_id": oferta_id}
 
     logger.error("[Oferta %s] Erro: %s. Executando retry...", oferta_id, erro)
-    retry_kwargs = {"kwargs": {"analise": analise}} if analise else {}
+    retry_kwargs = {"kwargs": {"analise": analise, "uso_tokens": uso_tokens}} if analise else {}
     raise task.retry(exc=erro, countdown=15 * (2**task.request.retries), **retry_kwargs) from erro
 
 
@@ -497,7 +539,7 @@ def _config_geracao():
     )
 
 
-def _registrar_uso_tokens(oferta_id: int, resposta) -> None:
+def _registrar_uso_tokens(oferta_id: int, resposta) -> dict:
     uso = getattr(resposta, "usage_metadata", None)
     prompt_tokens = getattr(uso, "prompt_token_count", None) if uso else None
     candidatos = getattr(uso, "candidates_token_count", None) if uso else None
@@ -509,6 +551,10 @@ def _registrar_uso_tokens(oferta_id: int, resposta) -> None:
         candidatos,
         total_tokens,
     )
+    return {
+        "prompt": prompt_tokens if isinstance(prompt_tokens, int) else None,
+        "saida": candidatos if isinstance(candidatos, int) else None,
+    }
 
 
 def _limitar_copy_prompt(ad_copy_texto: str) -> str:
@@ -552,6 +598,7 @@ def processar_anuncio_multimodal(
     video_url_r2: str,
     ad_copy_texto: str,
     analise: dict | None = None,
+    uso_tokens: dict | None = None,
 ):
     """Consome a mídia permanente do R2, processa com Gemini e indexa no pgvector[cite: 1]."""
     reservation_status, lease_remaining, lease_token = _reservar_oferta_para_processamento(oferta_id)
@@ -598,7 +645,7 @@ def processar_anuncio_multimodal(
                 contents=[_parte_video(video_file), prompt_final],
                 config=_config_geracao(),
             )
-            _registrar_uso_tokens(oferta_id, resposta)
+            uso_tokens = _registrar_uso_tokens(oferta_id, resposta)
             dados_extraidos = json.loads(resposta.text)
             resultado_validado = AnaliseAnuncioSchema(**dados_extraidos)
 
@@ -609,6 +656,7 @@ def processar_anuncio_multimodal(
             resultado_validado.model_dump(),
             vetor_embedding,
             lease_token,
+            uso_tokens,
         )
         if not persisted:
             logger.warning(
@@ -622,7 +670,7 @@ def processar_anuncio_multimodal(
 
     except Exception as e:
         paga = resultado_validado.model_dump() if resultado_validado else None
-        return _tratar_falha_processamento(self, oferta_id, lease_token, e, paga)
+        return _tratar_falha_processamento(self, oferta_id, lease_token, e, paga, uso_tokens)
 
     finally:
         # FinOps compulsório: remoção imediata da mídia na nuvem e do arquivo em tmpfs[cite: 1]
