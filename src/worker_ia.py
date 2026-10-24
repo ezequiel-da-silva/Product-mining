@@ -475,11 +475,13 @@ def _registrar_uso_tokens(oferta_id: int, resposta) -> None:
     uso = getattr(resposta, "usage_metadata", None)
     prompt_tokens = getattr(uso, "prompt_token_count", None) if uso else None
     candidatos = getattr(uso, "candidates_token_count", None) if uso else None
+    total_tokens = getattr(uso, "total_token_count", None) if uso else None
     logger.info(
-        "[Oferta %s] Tokens prompt=%s candidatos=%s",
+        "[Oferta %s] Consumo Gemini: prompt=%s, completion=%s, total=%s tokens.",
         oferta_id,
         prompt_tokens,
         candidatos,
+        total_tokens,
     )
 
 

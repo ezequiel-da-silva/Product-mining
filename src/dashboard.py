@@ -125,6 +125,7 @@ def _vetor_embedding(resposta) -> list[float]:
     return vetor
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def gerar_embedding_busca(frase: str) -> list[float]:
     resposta = init_embedding_client().models.embed_content(
         model=MODELO_EMBEDDING,

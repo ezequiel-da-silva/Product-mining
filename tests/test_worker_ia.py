@@ -286,11 +286,12 @@ def test_registrar_uso_tokens_le_os_contadores(caplog):
     resposta = MagicMock()
     resposta.usage_metadata.prompt_token_count = 120
     resposta.usage_metadata.candidates_token_count = 40
+    resposta.usage_metadata.total_token_count = 160
 
     with caplog.at_level(logging.INFO):
         worker._registrar_uso_tokens(7, resposta)
 
-    assert "Tokens prompt=120 candidatos=40" in caplog.text
+    assert "Consumo Gemini: prompt=120, completion=40, total=160 tokens." in caplog.text
 
 
 def test_erro_libera_somente_o_token_da_execucao(monkeypatch):
