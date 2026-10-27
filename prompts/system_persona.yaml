@@ -1,6 +1,6 @@
 # system_persona.yaml
 version: "1.0"
-model: "gemini-2.5-flash"
+model: "gemini-3.8-flash"
 temperature: 0.2
 role: "Estrategista de tráfego pago"
 instruction: >

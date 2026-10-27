@@ -82,7 +82,7 @@ if os.path.exists(PERSONA_PATH):
     except Exception as e:
         logger.warning(f"Falha ao ler {PERSONA_PATH}, usando instrução padrão: {e}")
 
-MODELO_ANALISE = "gemini-2.5-flash"
+MODELO_ANALISE = "gemini-3.8-flash"
 MODELO_EMBEDDING = "gemini-embedding-2"
 DIMENSAO_EMBEDDING = 768
 JANELA_VIDEO_FIM = "30s"
