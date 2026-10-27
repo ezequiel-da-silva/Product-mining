@@ -1,9 +1,11 @@
 import logging
 import os
+import socket
 import sys
 import time
 import types
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -52,6 +54,13 @@ def url_cdp_permitida(host: str, port: str) -> str:
     if not port.isdigit() or not (1 <= int(port) <= 65535):
         raise ValueError("CDP_PORT inválida.")
     return f"http://{host}:{int(port)}"
+
+
+def url_cdp_conectavel(cdp_url: str) -> str:
+    """O Chrome recusa o cabeçalho Host quando ele não é um IP nem localhost."""
+    parsed = urlsplit(cdp_url)
+    endereco = socket.gethostbyname(parsed.hostname or "")
+    return f"{parsed.scheme}://{endereco}:{parsed.port}"
 
 
 def despachar_anuncio_capturado(dados_brutos: dict):
@@ -160,8 +169,11 @@ def executar_sessao_cdp(cdp_url: str):
     while tentativas < max_tentativas:
         try:
             with sync_playwright() as p:
-                logger.info(f"Tentando conectar ao CDP em {cdp_url} (Tentativa {tentativas + 1}/{max_tentativas})...")
-                browser = p.chromium.connect_over_cdp(cdp_url, timeout=30000)
+                destino = url_cdp_conectavel(cdp_url)
+                logger.info(
+                    f"Tentando conectar ao CDP em {destino} (Tentativa {tentativas + 1}/{max_tentativas})..."
+                )
+                browser = p.chromium.connect_over_cdp(destino, timeout=30000)
                 context = browser.contexts[0] if browser.contexts else browser.new_context()
                 page = context.pages[0] if context.pages else context.new_page()
 

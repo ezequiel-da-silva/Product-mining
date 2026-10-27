@@ -93,7 +93,9 @@ services:
       redis:
         condition: service_healthy
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # Rancher no Windows: host-gateway é a bridge interna (172.17.0.1), onde o Chrome não escuta.
+      # CDP_BRIDGE_IP é o adaptador vEthernet (WSL); a ponte em infra/cdp-bridge.ps1 entrega ao 127.0.0.1.
+      - "host.docker.internal:${CDP_BRIDGE_IP:?CDP_BRIDGE_IP is required}"
     networks:
       - spy_network
   worker-qualification:

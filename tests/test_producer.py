@@ -51,6 +51,14 @@ def test_url_cdp_aceita_host_da_bridge():
     assert url_cdp_permitida("host.docker.internal", "9222") == "http://host.docker.internal:9222"
 
 
+def test_url_cdp_conectavel_usa_o_ip_resolvido(monkeypatch):
+    from src import producer
+
+    monkeypatch.setattr(producer.socket, "gethostbyname", lambda _host: "172.24.160.1")
+
+    assert producer.url_cdp_conectavel("http://host.docker.internal:9222") == "http://172.24.160.1:9222"
+
+
 def test_falha_de_fila_interrompe_a_varredura():
     from src import producer
 
