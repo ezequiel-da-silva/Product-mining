@@ -60,35 +60,43 @@ ROTULOS_OFERTAS = {
     "data_ultima_captura": "Última captura",
     "similaridade_pct": "Similaridade",
 }
-OFERTAS_RECENTES_SQL = f"""
-    SELECT {COLUNAS_OFERTA}
+# Bandit B608 is suppressed below because only this fixed column list is interpolated.
+OFERTAS_RECENTES_SQL = (
+    f"\n    SELECT {COLUNAS_OFERTA}"  # nosec B608
+    """
     FROM ofertas
     WHERE status_qualificacao = 'concluido'
     ORDER BY data_ultima_captura DESC, id DESC
     LIMIT %s
-"""
+    """
+)
 
-OFERTAS_RECENTES_CURSOR_SQL = f"""
-    SELECT {COLUNAS_OFERTA}
+OFERTAS_RECENTES_CURSOR_SQL = (
+    f"\n    SELECT {COLUNAS_OFERTA}"  # nosec B608
+    """
     FROM ofertas
     WHERE status_qualificacao = 'concluido'
       AND (data_ultima_captura, id) < (%s, %s)
     ORDER BY data_ultima_captura DESC, id DESC
     LIMIT %s
-"""
+    """
+)
 
-OFERTAS_BUSCA_SQL = f"""
-    SELECT {COLUNAS_OFERTA},
+OFERTAS_BUSCA_SQL = (
+    f"\n    SELECT {COLUNAS_OFERTA},"  # nosec B608
+    """
            embedding_analise <=> %s::vector AS distancia
     FROM ofertas
     WHERE status_qualificacao = 'concluido'
       AND embedding_analise IS NOT NULL
     ORDER BY embedding_analise <=> %s::vector, id
     LIMIT %s
-"""
+    """
+)
 
-OFERTAS_BUSCA_CURSOR_SQL = f"""
-    SELECT {COLUNAS_OFERTA},
+OFERTAS_BUSCA_CURSOR_SQL = (
+    f"\n    SELECT {COLUNAS_OFERTA},"  # nosec B608
+    """
            embedding_analise <=> %s::vector AS distancia
     FROM ofertas
     WHERE status_qualificacao = 'concluido'
@@ -96,7 +104,8 @@ OFERTAS_BUSCA_CURSOR_SQL = f"""
       AND (embedding_analise <=> %s::vector, id) > (%s, %s)
     ORDER BY embedding_analise <=> %s::vector, id
     LIMIT %s
-"""
+    """
+)
 
 NICHOS_CONCLUIDOS_SQL = """
     SELECT DISTINCT nicho
