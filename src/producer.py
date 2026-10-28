@@ -170,9 +170,7 @@ def executar_sessao_cdp(cdp_url: str):
         try:
             with sync_playwright() as p:
                 destino = url_cdp_conectavel(cdp_url)
-                logger.info(
-                    f"Tentando conectar ao CDP em {destino} (Tentativa {tentativas + 1}/{max_tentativas})..."
-                )
+                logger.info(f"Tentando conectar ao CDP em {destino} (Tentativa {tentativas + 1}/{max_tentativas})...")
                 browser = p.chromium.connect_over_cdp(destino, timeout=30000)
                 context = browser.contexts[0] if browser.contexts else browser.new_context()
                 page = context.pages[0] if context.pages else context.new_page()

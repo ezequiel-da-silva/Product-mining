@@ -6,7 +6,7 @@ google-genai==2.31.0
 pydantic==2.12.5          # Mínimo exigido pelo google-genai 2.31.0
 requests==2.33.0
 boto3==1.34.90
-streamlit==1.54.0
+streamlit==1.66.1
 jinja2==3.1.6              # Template de prompts
 pyyaml==6.0.1              # Leitura do arquivo de persona
 pytest==9.0.3              # Testes unitários

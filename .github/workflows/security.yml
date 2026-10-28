@@ -26,14 +26,4 @@ jobs:
       run: bandit -r src/ core/ -f txt
 
     - name: Audit Python dependencies
-      # O Streamlit 1.54 exige pillow<13; as correções publicadas estão só no Pillow 13.
-      run: |
-        pip-audit -r requirements.txt \
-          --ignore-vuln CVE-2026-112895 \
-          --ignore-vuln CVE-2026-112400 \
-          --ignore-vuln CVE-2026-112397 \
-          --ignore-vuln CVE-2026-112896 \
-          --ignore-vuln CVE-2026-112897 \
-          --ignore-vuln CVE-2026-112395 \
-          --ignore-vuln CVE-2026-112404 \
-          --ignore-vuln CVE-2026-112899
+      run: pip-audit -r requirements.txt
