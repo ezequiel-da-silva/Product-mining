@@ -107,7 +107,7 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
     assert mock_conn.commit.called, "O conn.commit não foi chamado."
 
     # Valida se os argumentos passados para a query estão corretos
-    args_chamada = mock_cursor.execute.call_args[0]
+    args_chamada = mock_cursor.execute.call_args_list[0].args
     parametros_sql = args_chamada[1]
 
     assert parametros_sql["id"] == 42
@@ -215,7 +215,7 @@ def test_processamento_descarta_resultado_de_lease_obsoleto(monkeypatch):
     result = worker.processar_anuncio_multimodal(MagicMock(), 7, VIDEO_R2_URL, "copy")
 
     assert result == {"status": "stale_lease", "oferta_id": 7}
-    assert persist.call_args.args[-1] == "token-1"
+    assert persist.call_args.args[3] == "token-1"
 
 
 def test_embedding_com_tamanho_errado_vai_para_dlq(monkeypatch):
@@ -317,7 +317,7 @@ def test_retry_com_analise_nao_baixa_nem_chama_gemini(monkeypatch):
     baixar.assert_not_called()
     upload.assert_not_called()
     gerar.assert_not_called()
-    assert persist.call_args.args[-1] == "token-1"
+    assert persist.call_args.args[3] == "token-1"
 
 
 def test_falha_antes_da_geracao_faz_retry_sem_analise(monkeypatch):

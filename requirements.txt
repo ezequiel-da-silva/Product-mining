@@ -11,5 +11,5 @@ jinja2==3.1.6              # Template de prompts
 pyyaml==6.0.1              # Leitura do arquivo de persona
 pytest==9.0.3              # Testes unitários
 playwright-stealth==1.0.6  # Mascarar automação da Meta
-setuptools==83.0.0         # Corrige o aviso de segurança; pkg_resources saiu nesta versão
+setuptools==84.2.1         # Mantém a versão corrigida para GHSA-xmj3-9gf7-h52w
 flower==2.0.1              # Painel de monitoramento do Celery
