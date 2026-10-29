@@ -21,7 +21,9 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from core.celery_app import app  # noqa: E402
+from core.pontuacao import BONUS_ANALISE_IA, DESPACHO_IMEDIATO, TETO_HEURISTICO, TETO_SCORE  # noqa: E402
 from core.secrets import ler_segredo  # noqa: E402
+from src.comercial import qualificar_pagina  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -64,7 +66,7 @@ R2_MULTIPART_PART_BYTES = 8 * 1024 * 1024
 R2_PRESIGNED_URL_TTL = 7 * 24 * 60 * 60
 MAX_FALHAS_IA = 3
 MIN_AVISTAMENTOS_IA = 2
-SCORE_DESPACHO_IMEDIATO = 75
+SCORE_DESPACHO_IMEDIATO = DESPACHO_IMEDIATO
 TETO_FALHAS_IA = 5
 ESPERA_REPROCESSAMENTO_IA = timedelta(days=7)
 COMMERCIAL_CTAS = {
@@ -194,7 +196,7 @@ def _calcular_score(campos: dict, now: datetime | None = None) -> int:
     if isinstance(destination, str) and _url_ecommerce(destination):
         score += 25
 
-    return min(score, 100)
+    return min(score, TETO_HEURISTICO)
 
 
 def _r2_configurado() -> bool:
@@ -519,7 +521,8 @@ def _url_video_ja_analisada(url: str, oferta_id: int) -> bool:
 
 
 def _copiar_enriquecimento(oferta_id: int, url_video_r2: str | None, phash: str | None) -> bool:
-    """Conclui a duplicata com a análise de uma oferta irmã, sem chamar o Gemini."""
+    """Copia só o criativo da irmã e qualifica o preço na página desta oferta."""
+    url_destino = None
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -529,14 +532,13 @@ def _copiar_enriquecimento(oferta_id: int, url_video_r2: str | None, phash: str 
                     gancho_3s = origem.gancho_3s,
                     nicho = origem.nicho,
                     gatilho_mental = origem.gatilho_mental,
-                    preco_oferta_estimado = NULL,
-                    margem_estimada_pct = NULL,
                     objecoes_quebradas = origem.objecoes_quebradas,
                     angulos_alternativos = origem.angulos_alternativos,
                     embedding_analise = origem.embedding_analise,
                     embedding_texto_hash = origem.embedding_texto_hash,
-                    score = LEAST(destino.score + 20, 120),
-                    status_qualificacao = 'concluido',
+                    score = LEAST(destino.score + %(bonus)s, %(teto)s),
+                    status_qualificacao = 'pendente_lp',
+                    dados_comerciais_ausentes = FALSE,
                     processamento_iniciado_em = NULL,
                     processamento_token = NULL
                 FROM (
@@ -550,15 +552,28 @@ def _copiar_enriquecimento(oferta_id: int, url_video_r2: str | None, phash: str 
                     LIMIT 1
                 ) AS origem
                 WHERE destino.id = %(id)s
-                  AND destino.status_qualificacao = 'pendente';
+                  AND destino.status_qualificacao = 'pendente'
+                RETURNING destino.url_destino;
                 """,
-                {"id": oferta_id, "url": url_video_r2, "phash": phash},
+                {
+                    "id": oferta_id,
+                    "url": url_video_r2,
+                    "phash": phash,
+                    "bonus": BONUS_ANALISE_IA,
+                    "teto": TETO_SCORE,
+                },
             )
-            enriquecida = cur.rowcount == 1
+            linha = cur.fetchone()
+            enriquecida = linha is not None
+            if enriquecida:
+                url_destino = linha.get("url_destino")
             conn.commit()
-    if enriquecida:
-        logger.info("Oferta %s concluída com a análise de uma oferta irmã.", oferta_id)
-    return enriquecida
+    if not enriquecida:
+        return False
+    with get_pool().connection() as conn:
+        qualificar_pagina(conn, oferta_id, url_destino)
+    logger.info("Oferta %s herdou o criativo e seguiu para a página de destino.", oferta_id)
+    return True
 
 
 @app.task(bind=True, name="tasks.qualification.avaliar_oferta", max_retries=3)
@@ -624,7 +639,11 @@ def avaliar_oferta(self, payload: dict):
                 ],
                 queue="ai_multimodal_queue",
             )
-            motivo = "avistamentos" if (oferta.get("vezes_avistado") or 0) >= MIN_AVISTAMENTOS_IA else "score_75"
+            motivo = (
+                "avistamentos"
+                if (oferta.get("vezes_avistado") or 0) >= MIN_AVISTAMENTOS_IA
+                else f"score_{SCORE_DESPACHO_IMEDIATO}"
+            )
             logger.info(
                 "Oferta %s (score %s) despachada para processamento multimodal; motivo=%s.",
                 oferta["id"],

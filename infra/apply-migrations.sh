@@ -30,7 +30,8 @@ for file in \
   infra/migrations/007_falhas_ia.sql \
   infra/migrations/008_falhas_ia_em.sql \
   infra/migrations/009_revogar_delete_pipeline.sql \
-  infra/migrations/010_tokens_ia.sql
+  infra/migrations/010_tokens_ia.sql \
+  infra/migrations/011_criativo_lp_score.sql
 do
   versao=$(basename "$file" .sql)
   applied=$(

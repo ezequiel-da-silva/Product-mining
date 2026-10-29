@@ -292,7 +292,7 @@ def test_score_75_despacha_no_primeiro_avistamento(monkeypatch, caplog):
         args=[42, "https://cdn.test/video.mp4", "Copy"],
         queue="ai_multimodal_queue",
     )
-    assert "motivo=score_75" in caplog.text
+    assert "motivo=score_60" in caplog.text
 
 
 def test_url_de_video_ja_analisada_nao_despacha_ia(monkeypatch):
@@ -345,21 +345,25 @@ def test_copiar_enriquecimento_so_conclui_pendente_a_partir_de_irma_concluida(mo
     conexao.cursor.return_value.__enter__.return_value = cursor
     pool = MagicMock()
     pool.connection.return_value.__enter__.return_value = conexao
+    cursor.fetchone.return_value = {"url_destino": "https://loja.example/produto"}
+    monkeypatch.setattr(worker, "qualificar_pagina", MagicMock(return_value=True))
     monkeypatch.setattr(worker, "get_pool", lambda: pool)
 
     assert worker._copiar_enriquecimento(42, "https://cdn.test/video.mp4", "cd" * 32) is True
 
-    consulta, params = cursor.execute.call_args.args
+    consulta, params = cursor.execute.call_args_list[0].args
     consulta = " ".join(consulta.split())
     assert "destino.status_qualificacao = 'pendente'" in consulta
+    assert "status_qualificacao = 'pendente_lp'" in consulta
     assert "AND status_qualificacao = 'concluido'" in consulta
     assert "embedding_analise = origem.embedding_analise" in consulta
-    assert "score = LEAST(destino.score + 20, 120)" in consulta
-    assert "preco_oferta_estimado = NULL" in consulta
-    assert "margem_estimada_pct = NULL" in consulta
-    assert "origem.preco_oferta_estimado" not in consulta
-    assert params == {"id": 42, "url": "https://cdn.test/video.mp4", "phash": "cd" * 32}
-    conexao.commit.assert_called_once()
+    assert "LEAST(destino.score + %(bonus)s, %(teto)s)" in consulta
+    assert "preco_oferta_estimado" not in consulta
+    assert "margem_estimada_pct" not in consulta
+    assert params["id"] == 42
+    assert params["bonus"] == 25
+    assert params["teto"] == 100
+    worker.qualificar_pagina.assert_called_once()
 
 
 def test_copiar_enriquecimento_sem_irma_concluida_nao_conclui(monkeypatch):
@@ -367,6 +371,7 @@ def test_copiar_enriquecimento_sem_irma_concluida_nao_conclui(monkeypatch):
 
     cursor = MagicMock()
     cursor.rowcount = 0
+    cursor.fetchone.return_value = None
     conexao = MagicMock()
     conexao.cursor.return_value.__enter__.return_value = cursor
     pool = MagicMock()

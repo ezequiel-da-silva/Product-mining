@@ -28,19 +28,18 @@ from src.dashboard import (
     PAGE_SIZE,
     PRECO_AUSENTE,
     ROTULOS_OFERTAS,
-    SESSAO_SEGUNDOS,
     TITULO_OFERTAS_RECENTES,
     TITULO_PAINEL,
-    _assinar_sessao,
+    _descartar_credencial_na_url,
     _dialogo_oferta,
     _mostrar_cards,
     _normalizar_frase_busca,
     _opcoes_filtro,
     _reiniciar_listagem,
-    _sessao_valida,
     _sincronizar_filtro,
     _vetor_embedding,
     _zerar_paginacao,
+    checkout_detectado,
     consultar_ofertas_por_similaridade,
     consultar_ofertas_recentes,
     formatar_data_card,
@@ -48,7 +47,10 @@ from src.dashboard import (
     gancho_curto,
     gerar_embedding_busca,
     listar_nichos_concluidos,
+    rotulo_margem,
     similaridade_percentual,
+    texto_comercial,
+    texto_nota,
     texto_preco,
 )
 
@@ -84,12 +86,12 @@ def test_dashboard_tem_rotulos_formato_e_titulo_sem_emoji():
     assert LARGURA_VIDEO == 420
     assert ALTURA_VIDEO == 280
     assert FILTRO_TODOS == "Todos"
-    assert FILTRO_NOTA == "Nota maior que 70"
-    assert NOTA_MINIMA == 70
+    assert FILTRO_NOTA == "Nota de 75 ou mais"
+    assert NOTA_MINIMA == 75
     assert _opcoes_filtro(["Fitness e Esportes"]) == [
         "Todos",
         "Fitness e Esportes",
-        "Nota maior que 70",
+        "Nota de 75 ou mais",
     ]
 
 
@@ -141,8 +143,11 @@ def test_paginacao_recente_usa_cursor_sem_offset():
 
     assert len(pagina) == PAGE_SIZE
     assert tem_mais is True
-    cursor_db.execute.assert_called_once_with(OFERTAS_RECENTES_CURSOR_SQL, (instante, 50, PAGE_SIZE + 1))
-    assert "OFFSET" not in OFERTAS_RECENTES_CURSOR_SQL
+    consulta, parametros = cursor_db.execute.call_args.args
+    assert "(data_ultima_captura, id) < (%s, %s)" in consulta
+    assert "triagem.estado = 'descartada'" in consulta
+    assert "OFFSET" not in consulta
+    assert parametros == (instante, 50, PAGE_SIZE + 1)
 
 
 def test_busca_vetorial_e_cursor_sao_parametrizados():
@@ -155,7 +160,7 @@ def test_busca_vetorial_e_cursor_sao_parametrizados():
     assert len(pagina) == PAGE_SIZE
     assert tem_mais is True
     consulta, parametros = cursor_db.execute.call_args.args
-    assert consulta == OFERTAS_BUSCA_CURSOR_SQL
+    assert "triagem.estado = 'descartada'" in consulta
     assert consulta.count("%s::vector") == 3
     assert "embedding_analise <=>" in consulta
     assert "OFFSET" not in consulta
@@ -186,15 +191,28 @@ def test_consultas_trazem_gancho_link_e_detalhe():
             assert coluna in COLUNAS_OFERTA
 
 
-def test_sessao_assinada_vale_doze_horas_e_rejeita_alteracao():
-    segredo = "senha-do-painel"
-    agora = 1_700_000_000.0
-    token = _assinar_sessao(segredo, int(agora) + SESSAO_SEGUNDOS)
+def test_credencial_nao_permanece_na_url(monkeypatch):
+    import src.dashboard as dashboard
 
-    assert _sessao_valida(token, segredo, agora=agora) is True
-    assert _sessao_valida(token, segredo, agora=agora + SESSAO_SEGUNDOS) is False
-    assert _sessao_valida(token + "a", segredo, agora=agora) is False
-    assert _sessao_valida(token, "outra-senha", agora=agora) is False
+    parametros = {"sessao": "1700000000.assinatura"}
+    monkeypatch.setattr(dashboard.st, "query_params", parametros)
+
+    _descartar_credencial_na_url()
+
+    assert "sessao" not in parametros
+
+
+def test_nota_margem_e_checkout_sao_explicitos():
+    assert texto_nota(80) == "80/100"
+    assert texto_nota(None) == "—"
+    assert rotulo_margem(70) == "Margem alta: 70%"
+    assert rotulo_margem(45) == "Margem média: 45%"
+    assert rotulo_margem(10) == "Margem baixa: 10%"
+    assert rotulo_margem(None) == "Margem não identificada"
+    assert checkout_detectado("https://loja.myshopify.com/products/x") == "Shopify"
+    assert checkout_detectado("https://exemplo.com") is None
+    assert texto_comercial({"dados_comerciais_ausentes": True}) == "Dados comerciais ausentes"
+    assert texto_comercial({"preco_oferta_estimado": 10}) == "R$ 10,00"
 
 
 def test_similaridade_e_reset_da_paginacao(monkeypatch):
@@ -234,7 +252,7 @@ def test_filtro_de_nota_parametriza_o_score():
     consultar_ofertas_recentes(conexao, filtro=FILTRO_NOTA)
 
     consulta, parametros = cursor_db.execute.call_args.args
-    assert "score > %s" in consulta
+    assert "score >= %s" in consulta
     assert "ORDER BY data_ultima_captura DESC, id DESC" in consulta
     assert "OFFSET" not in consulta
     assert parametros == (NOTA_MINIMA, PAGE_SIZE + 1)
@@ -261,7 +279,7 @@ def test_busca_com_filtro_de_nota_preserva_o_cursor_vetorial():
     consultar_ofertas_por_similaridade(conexao, vetor, (0.25, 50), filtro=FILTRO_NOTA)
 
     consulta, parametros = cursor_db.execute.call_args.args
-    assert "score > %s" in consulta
+    assert "score >= %s" in consulta
     assert consulta.count("%s::vector") == 3
     assert parametros[4] == NOTA_MINIMA
     assert parametros[0] == parametros[1] == parametros[5]
@@ -292,14 +310,16 @@ def test_cards_e_modal_substituem_a_tabela():
     import src.dashboard as dashboard
 
     fonte_main = inspect.getsource(dashboard.main)
+    fonte_lista = inspect.getsource(dashboard._painel_ofertas)
     fonte_cards = inspect.getsource(_mostrar_cards)
     fonte_dialogo = inspect.getsource(_dialogo_oferta)
     fonte_filtro = inspect.getsource(_sincronizar_filtro)
 
     assert "st.dataframe" not in fonte_main
+    assert "st.dataframe" not in fonte_lista
     assert "st.pills" in fonte_filtro
-    assert "_sincronizar_filtro" in fonte_main
-    assert "_dialogo_oferta" in fonte_main
+    assert "_sincronizar_filtro" in fonte_lista
+    assert "_dialogo_oferta" in fonte_lista
     assert "st.columns(3" in fonte_cards
     assert "border=True" in fonte_cards
     assert "BOTAO_DETALHES" in fonte_cards
@@ -312,5 +332,6 @@ def test_cards_e_modal_substituem_a_tabela():
     assert 'width="stretch"' not in fonte_dialogo
     assert "st.columns(3" in fonte_dialogo
     assert "st.columns(2" in fonte_dialogo
-    assert "st.link_button" in fonte_dialogo
-    assert "texto_preco" in fonte_dialogo
+    assert "_link_loja" in fonte_dialogo
+    assert "noopener noreferrer" in inspect.getsource(dashboard._link_loja)
+    assert "texto_comercial" in fonte_dialogo
