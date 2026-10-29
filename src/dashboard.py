@@ -29,6 +29,11 @@ LEGENDA_BUSCA = (
     "Para minerar anúncios novos, pesquise na aba do Chrome da Biblioteca de Anúncios."
 )
 PRECO_AUSENTE = "não identificado"
+LEGENDA_ATALHOS = "Com o foco no card, S salva, D descarta e T marca testando."
+ROTULO_SALVAR = "Salvar"
+ROTULO_DESCARTAR = "Descartar"
+ROTULO_TESTANDO = "Testando"
+ESTADOS_TRIAGEM = ("estrelada", "descartada", "testando")
 FILTRO_TODOS = "Todos"
 FILTRO_NOTA = "Nota de 75 ou mais"
 NOTA_MINIMA = NOTA_MINIMA_PAINEL
@@ -383,6 +388,104 @@ def checkout_detectado(url: object) -> str | None:
     return None
 
 
+def texto_bloqueio_cota() -> str:
+    return (
+        f"Limite de {LIMITE_EMBEDDING_POR_MINUTO} buscas com embedding por minuto. "
+        "Aguarde a janela liberar antes de tentar de novo."
+    )
+
+
+def texto_regiao_viva(
+    *,
+    busca_limitada: bool,
+    total: int,
+    em_busca: bool,
+    frase: str,
+    tem_mais: bool,
+) -> str:
+    if busca_limitada:
+        return texto_bloqueio_cota()
+    if total <= 0:
+        return "Nenhuma oferta concluída encontrada."
+    extras = " Há mais ofertas." if tem_mais else ""
+    if em_busca:
+        return f'{total} ofertas para "{frase}".{extras}'
+    if total == 1:
+        return f"1 oferta concluída.{extras}"
+    return f"{total} ofertas concluídas.{extras}"
+
+
+def html_regiao_viva(texto: str) -> str:
+    return '<div data-regiao-viva role="status" aria-live="polite" aria-atomic="true">' f"{html.escape(texto)}</div>"
+
+
+def _html_atalhos_triagem() -> str:
+    mapa = f'{{s: "{ROTULO_SALVAR}", d: "{ROTULO_DESCARTAR}", t: "{ROTULO_TESTANDO}"}}'
+    return f"""
+<style>
+div[data-testid="stHtml"]:has(script[data-atalhos-triagem]) {{
+  height: 0;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+}}
+</style>
+<script data-atalhos-triagem>
+(() => {{
+  const mapa = {mapa};
+  const cardDoFoco = (alvo) => {{
+    let no = alvo;
+    while (no && no !== document.body) {{
+      if (no.querySelectorAll && no.querySelectorAll("[data-oferta-card]").length === 1) return no;
+      no = no.parentElement;
+    }}
+    return null;
+  }};
+  const anterior = window.__atalhosTriagem;
+  if (anterior) {{
+    document.removeEventListener("keydown", anterior.tecla, true);
+    document.removeEventListener("pointerdown", anterior.ponteiro, true);
+  }}
+  let cardApontado = null;
+  const ponteiro = (evento) => {{
+    const alvo = evento.target instanceof Element ? evento.target : null;
+    cardApontado = alvo ? cardDoFoco(alvo) : null;
+  }};
+  const tecla = (evento) => {{
+    if (evento.repeat || evento.metaKey || evento.ctrlKey || evento.altKey) return;
+    const alvo = evento.target instanceof Element ? evento.target : document.activeElement;
+    if (!(alvo instanceof Element)) return;
+    const tag = (alvo.tagName || "").toLowerCase();
+    if (tag === "textarea" || alvo.isContentEditable) return;
+    if (tag === "input") {{
+      const tipo = (alvo.type || "").toLowerCase();
+      if (tipo !== "checkbox" && tipo !== "radio") return;
+    }}
+    const rotulo = mapa[(evento.key || "").toLowerCase()];
+    if (!rotulo) return;
+    const peloFoco = cardDoFoco(alvo) || (document.activeElement instanceof Element ? cardDoFoco(document.activeElement) : null);
+    const controleForaDoCard = !peloFoco && (tag === "button" || tag === "a" || tag === "select");
+    const card = peloFoco || (controleForaDoCard ? null : cardApontado);
+    if (!card) return;
+    const botao = [...card.querySelectorAll("button")].find(
+      (item) => (item.textContent || "").replace(/\\s+/g, " ").trim() === rotulo
+    );
+    if (!botao) return;
+    evento.preventDefault();
+    botao.click();
+  }};
+  window.__atalhosTriagem = {{tecla, ponteiro}};
+  document.addEventListener("pointerdown", ponteiro, true);
+  document.addEventListener("keydown", tecla, true);
+}})();
+</script>
+"""
+
+
+def _registrar_atalhos_triagem() -> None:
+    st.html(_html_atalhos_triagem(), unsafe_allow_javascript=True)
+
+
 def texto_comercial(oferta: dict) -> str:
     if oferta.get("dados_comerciais_ausentes"):
         return "Dados comerciais ausentes"
@@ -482,8 +585,17 @@ def _escrever_angulos(valor: object) -> None:
         st.write(angulo.get("copy_sugerida") or "—")
 
 
-@st.dialog("Oferta", width="large")
 def _dialogo_oferta(oferta: dict) -> None:
+    titulo = rotulo_acessivel_detalhes(oferta)
+
+    @st.dialog(titulo, width="large")
+    def _conteudo(oferta: dict) -> None:
+        _corpo_dialogo(oferta)
+
+    _conteudo(oferta)
+
+
+def _corpo_dialogo(oferta: dict) -> None:
     st.text(rotulo_nicho(oferta))
     nota = oferta.get("score")
     st.caption(
@@ -635,6 +747,15 @@ def _carregar_proxima_pagina(conn, filtro: str | None, ocultar_descartadas: bool
     st.session_state["ofertas_inicializadas"] = True
 
 
+def _legenda_triagem(estado: object) -> None:
+    if estado == "estrelada":
+        st.caption("Salva")
+    elif estado == "descartada":
+        st.caption("Descartada")
+    elif estado == "testando":
+        st.caption("Em teste")
+
+
 def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str]) -> dict | None:
     escolhida = None
     for inicio in range(0, len(ofertas), 3):
@@ -644,6 +765,12 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
                 with st.container(border=True):
                     nicho = rotulo_nicho(oferta)
                     oferta_id = oferta.get("id")
+                    if isinstance(oferta_id, int) and not isinstance(oferta_id, bool):
+                        st.html(f'<span data-oferta-card="{oferta_id}" hidden></span>')
+                        st.checkbox(
+                            f"Selecionar a oferta {texto_literal(nicho)} #{oferta_id}",
+                            key=f"selecionar-{oferta_id}",
+                        )
                     st.text(nicho)
                     st.caption(texto_comercial(oferta))
                     _mostrar_margem(oferta.get("margem_estimada_pct"), oferta.get("preco_moeda"))
@@ -654,11 +781,7 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
                     if em_busca and oferta.get("distancia") is not None:
                         percentual = similaridade_percentual(oferta["distancia"])
                         st.caption(f"{ROTULOS_OFERTAS['similaridade_pct']}: {percentual:.0f}%")
-                    estado = triagem.get(oferta_id)
-                    if estado == "estrelada":
-                        st.caption("Salva")
-                    elif estado == "testando":
-                        st.caption("Em teste")
+                    _legenda_triagem(triagem.get(oferta_id))
                     st.write(gancho_curto(oferta.get("gancho_3s")))
                     st.caption(formatar_data_card(oferta.get("data_ultima_captura")))
                     url = _url_http(oferta.get("url_destino"))
@@ -668,13 +791,13 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
                         escolhida = {"tipo": "detalhe", "oferta": oferta}
                     salvar, descartar, testar = st.columns(3)
                     with salvar:
-                        if st.button("Salvar", key=f"salvar-{oferta_id}"):
+                        if st.button(ROTULO_SALVAR, key=f"salvar-{oferta_id}"):
                             escolhida = {"tipo": "triagem", "id": oferta_id, "estado": "estrelada"}
                     with descartar:
-                        if st.button("Descartar", key=f"descartar-{oferta_id}"):
+                        if st.button(ROTULO_DESCARTAR, key=f"descartar-{oferta_id}"):
                             escolhida = {"tipo": "triagem", "id": oferta_id, "estado": "descartada"}
                     with testar:
-                        if st.button("Testando", key=f"testando-{oferta_id}"):
+                        if st.button(ROTULO_TESTANDO, key=f"testando-{oferta_id}"):
                             escolhida = {"tipo": "triagem", "id": oferta_id, "estado": "testando"}
     return escolhida
 
@@ -729,6 +852,60 @@ def _definir_triagem(conn, oferta_id: int, estado: str) -> None:
     conn.commit()
 
 
+SQL_DEFINIR_TRIAGEM_LOTE = """
+INSERT INTO triagem_oferta (oferta_id, estado)
+SELECT id, %(estado)s
+FROM unnest(%(ids)s::bigint[]) AS id
+ON CONFLICT (oferta_id) DO UPDATE
+SET estado = EXCLUDED.estado,
+    atualizado_em = CURRENT_TIMESTAMP
+"""
+
+
+def _ids_selecionados(ofertas: list[dict]) -> list[int]:
+    ids: list[int] = []
+    for oferta in ofertas:
+        oferta_id = oferta.get("id")
+        if not isinstance(oferta_id, int) or isinstance(oferta_id, bool):
+            continue
+        if st.session_state.get(f"selecionar-{oferta_id}"):
+            ids.append(oferta_id)
+    return ids
+
+
+def _definir_triagem_lote(conn, oferta_ids: list[int], estado: str) -> None:
+    ids = [item for item in oferta_ids if isinstance(item, int) and not isinstance(item, bool)]
+    if not ids or estado not in ESTADOS_TRIAGEM:
+        return
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(SQL_DEFINIR_TRIAGEM_LOTE, {"ids": ids, "estado": estado})
+
+
+def _aplicar_lote(conn, ofertas: list[dict]) -> bool:
+    selecionadas = _ids_selecionados(ofertas)
+    if not selecionadas:
+        return False
+    st.caption(f"{len(selecionadas)} ofertas selecionadas")
+    salvar, descartar, testar = st.columns(3)
+    estado = None
+    with salvar:
+        if st.button("Salvar seleção", key="lote-salvar"):
+            estado = "estrelada"
+    with descartar:
+        if st.button("Descartar seleção", key="lote-descartar"):
+            estado = "descartada"
+    with testar:
+        if st.button("Testando seleção", key="lote-testando"):
+            estado = "testando"
+    if estado is None:
+        return False
+    _definir_triagem_lote(conn, selecionadas, estado)
+    for oferta_id in selecionadas:
+        st.session_state[f"selecionar-{oferta_id}"] = False
+    return True
+
+
 def _painel_operacao(conn) -> None:
     st.header("Operação do pipeline")
     st.caption("Contagens da fila e tokens de IA gravados neste mês.")
@@ -752,6 +929,15 @@ def _painel_operacao(conn) -> None:
     st.caption(f"Tokens neste mês: {prompt} de prompt e {saida} de resposta.")
 
 
+def _titulo_lista(em_busca: bool) -> None:
+    if em_busca:
+        st.header(f'Resultados para "{st.session_state["ofertas_frase"]}"')
+        st.caption("Ordenados por similaridade semântica.")
+        return
+    st.header(TITULO_OFERTAS_RECENTES)
+    st.caption(OFERTAS_RECENTES_LEGENDA)
+
+
 def _painel_ofertas(conn) -> None:
     if "ofertas_modo" not in st.session_state:
         _reiniciar_listagem()
@@ -770,10 +956,7 @@ def _painel_ofertas(conn) -> None:
     if buscar:
         _aplicar_busca(frase)
     if st.session_state.get("busca_limitada"):
-        st.warning(
-            f"Limite de {LIMITE_EMBEDDING_POR_MINUTO} buscas com embedding por minuto. "
-            "Aguarde a janela liberar antes de tentar de novo."
-        )
+        st.warning(texto_bloqueio_cota())
 
     opcoes = _opcoes_filtro(listar_nichos_concluidos(conn))
     filtro = _sincronizar_filtro(opcoes)
@@ -783,17 +966,24 @@ def _painel_ofertas(conn) -> None:
         _carregar_proxima_pagina(conn, filtro_consulta, ocultar_descartadas)
 
     ofertas = st.session_state["ofertas_resultados"]
+    em_busca = st.session_state["ofertas_modo"] == "busca"
+    anuncio = texto_regiao_viva(
+        busca_limitada=bool(st.session_state.get("busca_limitada")),
+        total=len(ofertas),
+        em_busca=em_busca,
+        frase=str(st.session_state.get("ofertas_frase") or ""),
+        tem_mais=bool(st.session_state.get("ofertas_tem_mais")),
+    )
+    st.html(html_regiao_viva(anuncio))
     if not ofertas:
         st.info("Nenhuma oferta concluída encontrada.")
         return
 
-    em_busca = st.session_state["ofertas_modo"] == "busca"
-    if em_busca:
-        st.header(f'Resultados para "{st.session_state["ofertas_frase"]}"')
-        st.caption("Ordenados por similaridade semântica.")
-    else:
-        st.header(TITULO_OFERTAS_RECENTES)
-        st.caption(OFERTAS_RECENTES_LEGENDA)
+    _titulo_lista(em_busca)
+    st.caption(LEGENDA_ATALHOS)
+    _registrar_atalhos_triagem()
+    if _aplicar_lote(conn, ofertas):
+        st.rerun()
     triagem = _triagem_por_oferta(conn, ofertas)
     escolhida = _mostrar_cards(ofertas, em_busca, triagem)
     if escolhida and escolhida["tipo"] == "detalhe":

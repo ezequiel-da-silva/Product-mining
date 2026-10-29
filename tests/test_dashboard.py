@@ -36,6 +36,8 @@ from src.dashboard import (
     TITULO_PAINEL,
     _aplicar_busca,
     _avaliar_cota_embedding,
+    _corpo_dialogo,
+    _definir_triagem_lote,
     _descartar_credencial_na_url,
     _dialogo_oferta,
     _link_loja,
@@ -54,15 +56,18 @@ from src.dashboard import (
     formatar_preco_br,
     gancho_curto,
     gerar_embedding_busca,
+    html_regiao_viva,
     listar_nichos_concluidos,
     rotulo_acessivel_detalhes,
     rotulo_margem,
     rotulo_nicho,
     similaridade_percentual,
+    texto_bloqueio_cota,
     texto_comercial,
     texto_literal,
     texto_nota,
     texto_preco,
+    texto_regiao_viva,
 )
 
 
@@ -444,7 +449,8 @@ def test_cards_e_modal_substituem_a_tabela():
     fonte_main = inspect.getsource(dashboard.main)
     fonte_lista = inspect.getsource(dashboard._painel_ofertas)
     fonte_cards = inspect.getsource(_mostrar_cards)
-    fonte_dialogo = inspect.getsource(_dialogo_oferta)
+    fonte_dialogo = inspect.getsource(_corpo_dialogo)
+    fonte_abertura = inspect.getsource(_dialogo_oferta)
     fonte_filtro = inspect.getsource(_sincronizar_filtro)
 
     assert "st.dataframe" not in fonte_main
@@ -477,3 +483,69 @@ def test_cards_e_modal_substituem_a_tabela():
     assert "st.text(linha)" in inspect.getsource(dashboard._escrever_angulos)
     assert 'st.markdown(f"**{nicho}**")' not in fonte_cards
     assert "url_leitura" in fonte_dialogo
+    assert "rotulo_acessivel_detalhes(oferta)" in fonte_abertura
+    assert 'st.dialog(titulo, width="large")' in fonte_abertura
+    assert '@st.dialog("Oferta"' not in fonte_abertura
+    assert 'aria-live="polite"' in inspect.getsource(html_regiao_viva)
+    assert "data-oferta-card" in fonte_cards
+    assert "Selecionar a oferta" in fonte_cards
+    assert "_aplicar_lote" in fonte_lista
+    assert "_definir_triagem_lote" in inspect.getsource(dashboard._aplicar_lote)
+    assert "LEGENDA_ATALHOS" in fonte_lista
+
+
+def test_regiao_viva_anuncia_contagem_e_bloqueio_da_cota():
+    bloqueio = texto_bloqueio_cota()
+    assert "12" in bloqueio
+    assert texto_regiao_viva(busca_limitada=True, total=4, em_busca=True, frase="sono", tem_mais=False) == bloqueio
+    assert texto_regiao_viva(busca_limitada=False, total=0, em_busca=False, frase="", tem_mais=False) == (
+        "Nenhuma oferta concluída encontrada."
+    )
+    assert (
+        texto_regiao_viva(busca_limitada=False, total=3, em_busca=False, frase="", tem_mais=True)
+        == "3 ofertas concluídas. Há mais ofertas."
+    )
+    assert texto_regiao_viva(busca_limitada=False, total=2, em_busca=True, frase="sono", tem_mais=False) == (
+        '2 ofertas para "sono".'
+    )
+    html_anuncio = html_regiao_viva('2 ofertas para "a<b>"')
+    assert 'aria-live="polite"' in html_anuncio
+    assert 'role="status"' in html_anuncio
+    assert "a&lt;b&gt;" in html_anuncio
+    assert "<b>" not in html_anuncio
+
+
+def test_lote_grava_o_mesmo_estado_numa_transacao():
+    cursor = MagicMock()
+    conexao = MagicMock()
+    conexao.cursor.return_value.__enter__.return_value = cursor
+
+    _definir_triagem_lote(conexao, [3, 8, True], "estrelada")
+
+    conexao.transaction.assert_called_once()
+    assert cursor.execute.call_count == 1
+    consulta, params = cursor.execute.call_args.args
+    assert "unnest" in consulta
+    assert "ON CONFLICT (oferta_id)" in consulta
+    assert params == {"ids": [3, 8], "estado": "estrelada"}
+    conexao.commit.assert_not_called()
+
+    cursor.reset_mock()
+    _definir_triagem_lote(conexao, [], "estrelada")
+    _definir_triagem_lote(conexao, [1], "arquivada")
+    cursor.execute.assert_not_called()
+
+
+def test_atalho_do_card_focado_usa_s_d_e_t():
+    import src.dashboard as dashboard
+
+    html_atalho = dashboard._html_atalhos_triagem()
+    assert 's: "Salvar"' in html_atalho
+    assert 'd: "Descartar"' in html_atalho
+    assert 't: "Testando"' in html_atalho
+    assert 'querySelectorAll("[data-oferta-card]")' in html_atalho
+    assert "stVerticalBlockBorderWrapper" not in html_atalho
+    assert "pointerdown" in html_atalho
+    assert "window.__atalhosTriagem" in html_atalho
+    assert "textarea" in html_atalho
+    assert "unsafe_allow_javascript=True" in inspect.getsource(dashboard._registrar_atalhos_triagem)
