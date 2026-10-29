@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.2.0...v0.3.0) (2026-10-29)
+
+
+### Features
+
+* catalog niches and grant triage writes to the panel ([8530478](https://github.com/ezequiel-da-silva/Product-mining/commit/85304781291158837fca5c9285bc11a65967ef93))
+* qualify each landing page before closing an offer ([#2](https://github.com/ezequiel-da-silva/Product-mining/issues/2)) ([0c60cfb](https://github.com/ezequiel-da-silva/Product-mining/commit/0c60cfbfc2b551460b1a74c5cc553029b80352d3))
+
+
+### Bug Fixes
+
+* align CI lint and migration database user ([98e3965](https://github.com/ezequiel-da-silva/Product-mining/commit/98e3965f7663d3d6444a01ccb2b767f6fb061e21))
+
 ## [0.2.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.1.0...v0.2.0) (2026-10-28)
 
 
