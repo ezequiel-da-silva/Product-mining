@@ -16,6 +16,7 @@ from google import genai
 from google.genai import types
 from psycopg.rows import dict_row
 from schemas import NICHOS_CANONICOS, nicho_canonico
+from src.midia_r2 import url_leitura
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -333,11 +334,19 @@ def _mostrar_margem(valor: object) -> None:
     st.caption(LEGENDA_MARGEM)
 
 
+def texto_literal(valor: object) -> str:
+    """Impede que um texto persistido vire link, negrito ou código no rótulo."""
+    texto = str(valor).replace("\\", "\\\\")
+    for caractere in ("[", "]", "*", "_", "`"):
+        texto = texto.replace(caractere, f"\\{caractere}")
+    return texto.replace("://", ":\u2060//")
+
+
 def rotulo_acessivel_detalhes(oferta: dict) -> str:
     nicho = str(oferta.get("nicho") or "").strip() or "sem nicho"
     identificador = oferta.get("id")
     numero = identificador if identificador is not None else "s/n"
-    return f"{BOTAO_DETALHES} da oferta {nicho} #{numero}"
+    return f"{BOTAO_DETALHES} da oferta {texto_literal(nicho)} #{numero}"
 
 
 def checkout_detectado(url: object) -> str | None:
@@ -447,23 +456,24 @@ def _escrever_angulos(valor: object) -> None:
         return
     for angulo in angulos:
         if not isinstance(angulo, dict):
-            st.write(str(angulo))
+            st.text(str(angulo))
             continue
-        titulo = angulo.get("titulo") or "Ângulo"
-        foco = angulo.get("foco_emocional") or ""
-        st.markdown(f"**{titulo}**" + (f" — {foco}" if foco else ""))
+        titulo = str(angulo.get("titulo") or "Ângulo")
+        foco = str(angulo.get("foco_emocional") or "").strip()
+        linha = f"{titulo} — {foco}" if foco else titulo
+        st.text(linha)
         st.write(angulo.get("copy_sugerida") or "—")
 
 
 @st.dialog("Oferta", width="large")
 def _dialogo_oferta(oferta: dict) -> None:
-    st.subheader(rotulo_nicho(oferta))
+    st.text(rotulo_nicho(oferta))
     nota = oferta.get("score")
     st.caption(
         f"{ROTULOS_OFERTAS['score']}: {texto_nota(nota)} · "
         f"{ROTULOS_OFERTAS['data_ultima_captura']}: {formatar_data_card(oferta.get('data_ultima_captura'))}"
     )
-    video = _url_http(oferta.get("url_video_r2"))
+    video = url_leitura(oferta.get("url_video_r2"))
     if video:
         st.caption("Prévia do vídeo do anúncio")
         st.html(
@@ -567,7 +577,13 @@ def _aplicar_busca(frase: str, agora: float | None = None) -> None:
 def _sincronizar_filtro(opcoes: list[str]) -> str:
     if "filtro_ofertas" not in st.session_state or st.session_state["filtro_ofertas"] not in opcoes:
         st.session_state["filtro_ofertas"] = FILTRO_TODOS
-    filtro = st.pills("Filtrar ofertas", opcoes, selection_mode="single", key="filtro_ofertas")
+    filtro = st.pills(
+        "Filtrar ofertas",
+        opcoes,
+        selection_mode="single",
+        key="filtro_ofertas",
+        format_func=texto_literal,
+    )
     if not filtro:
         filtro = FILTRO_TODOS
     if st.session_state.get("ofertas_filtro_visto") != filtro:
@@ -611,7 +627,7 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
                 with st.container(border=True):
                     nicho = rotulo_nicho(oferta)
                     oferta_id = oferta.get("id")
-                    st.markdown(f"**{nicho}**")
+                    st.text(nicho)
                     st.caption(texto_comercial(oferta))
                     _mostrar_margem(oferta.get("margem_estimada_pct"))
                     checkout = checkout_detectado(oferta.get("url_destino"))

@@ -60,6 +60,7 @@ from src.dashboard import (
     rotulo_nicho,
     similaridade_percentual,
     texto_comercial,
+    texto_literal,
     texto_nota,
     texto_preco,
 )
@@ -332,6 +333,8 @@ def test_nota_margem_e_checkout_sao_explicitos():
     assert ESTIMATIVA_SOURCING == "Estimativa Sourcing (China)"
     assert "conciliação fiscal" in LEGENDA_MARGEM
     assert rotulo_acessivel_detalhes({"nicho": "Pet", "id": 7}) == "Ver detalhes da oferta Pet #7"
+    assert texto_literal("Pet [loja](https://evil.example)") == "Pet \\[loja\\](https:\u2060//evil.example)"
+    assert "texto_literal(nicho)" in inspect.getsource(rotulo_acessivel_detalhes)
     assert rotulo_acessivel_detalhes({"id": 3}) == "Ver detalhes da oferta sem nicho #3"
     assert checkout_detectado("https://loja.myshopify.com/products/x") == "Shopify"
     assert checkout_detectado("https://exemplo.com") is None
@@ -442,6 +445,7 @@ def test_cards_e_modal_substituem_a_tabela():
     assert "st.dataframe" not in fonte_main
     assert "st.dataframe" not in fonte_lista
     assert "st.pills" in fonte_filtro
+    assert "format_func=texto_literal" in fonte_filtro
     assert "_sincronizar_filtro" in fonte_lista
     assert "_dialogo_oferta" in fonte_lista
     assert "st.columns(3" in fonte_cards
@@ -463,3 +467,8 @@ def test_cards_e_modal_substituem_a_tabela():
     assert "_link_loja" in fonte_dialogo
     assert "noopener noreferrer" in inspect.getsource(dashboard._link_loja)
     assert "texto_comercial" in fonte_dialogo
+    assert "st.text(nicho)" in fonte_cards
+    assert "st.text(rotulo_nicho(oferta))" in fonte_dialogo
+    assert "st.text(linha)" in inspect.getsource(dashboard._escrever_angulos)
+    assert 'st.markdown(f"**{nicho}**")' not in fonte_cards
+    assert "url_leitura" in fonte_dialogo
