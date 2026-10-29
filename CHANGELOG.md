@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.3.0...v0.4.0) (2026-10-29)
+
+
+### Features
+
+* label estimated margins and name each offer button ([#5](https://github.com/ezequiel-da-silva/Product-mining/issues/5)) ([f83a05f](https://github.com/ezequiel-da-silva/Product-mining/commit/f83a05ff04f7323ab0292916e680f19a57e29239))
+
+
+### Bug Fixes
+
+* warn on insecure store links and cap embedding searches ([c16dc06](https://github.com/ezequiel-da-silva/Product-mining/commit/c16dc06db2bf406e0aa5270d088a76500eb5b7a7))
+
 ## [0.3.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.2.0...v0.3.0) (2026-10-29)
 
 
