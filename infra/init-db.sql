@@ -141,5 +141,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('009_revogar_delete_pipeline'),
     ('010_tokens_ia'),
     ('011_criativo_lp_score'),
-    ('012_nicho_canonico')
+    ('012_nicho_canonico'),
+    ('013_privilegios_estreitos')
 ON CONFLICT (versao) DO NOTHING;

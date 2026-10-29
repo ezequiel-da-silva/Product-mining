@@ -710,3 +710,30 @@ def test_copy_longa_e_cortada_no_prompt(caplog):
     assert "x" * 2000 in prompt
     assert "x" * 2001 not in prompt
     assert "2001" in caplog.text
+
+
+def test_download_de_chave_usa_a_url_assinada_na_hora(monkeypatch, tmp_path):
+    import src.worker_ia as worker
+
+    assinada = "https://account.r2.cloudflarestorage.com/bucket/videos/ad-1.mp4?X-Amz-Expires=300"
+    monkeypatch.setattr(worker, "url_leitura", lambda valor: assinada if valor == "videos/ad-1.mp4" else None)
+    monkeypatch.setattr(worker.socket, "getaddrinfo", _dns("1.1.1.1"))
+    monkeypatch.setattr(worker.tempfile, "tempdir", str(tmp_path))
+    resposta = MagicMock()
+    resposta.is_redirect = False
+    resposta.__enter__.return_value = resposta
+    resposta.iter_content.return_value = [b"video"]
+    with patch("src.worker_ia.requests.get", return_value=resposta) as get_video:
+        caminho = _baixar_video_temporario("videos/ad-1.mp4")
+
+    assert get_video.call_args.args[0] == assinada
+    assert caminho.startswith(str(tmp_path))
+
+
+def test_chave_sem_credencial_nao_baixa(monkeypatch):
+    monkeypatch.setattr("src.midia_r2.ler_segredo", lambda _nome: "")
+    with patch("src.worker_ia.requests.get") as get_video:
+        with pytest.raises(ValueError, match="resolver"):
+            _baixar_video_temporario("videos/ad-1.mp4")
+
+    get_video.assert_not_called()

@@ -18,6 +18,7 @@ from src.lifecycle import (  # noqa: E402
 
 def test_chave_de_video_publico_ou_pre_assinado():
     assert _chave_objeto_r2("https://cdn.example/videos/ad-1.mp4") == "videos/ad-1.mp4"
+    assert _chave_objeto_r2("videos/ad-1.mp4") == "videos/ad-1.mp4"
     assinada = "https://account.r2.cloudflarestorage.com/bucket/videos/ad_1.mp4?X-Amz-Algorithm=AWS4"
     assert _chave_objeto_r2(assinada) == "videos/ad_1.mp4"
     assert _chave_objeto_r2("https://cdn.example/other/file.mp4") is None

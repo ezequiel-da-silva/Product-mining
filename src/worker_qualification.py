@@ -24,6 +24,7 @@ from core.celery_app import app  # noqa: E402
 from core.pontuacao import BONUS_ANALISE_IA, DESPACHO_IMEDIATO, TETO_HEURISTICO, TETO_SCORE  # noqa: E402
 from core.secrets import ler_segredo  # noqa: E402
 from src.comercial import qualificar_pagina  # noqa: E402
+from src.midia_r2 import referencia_armazenada  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -63,7 +64,6 @@ def _close_db_pool(**_kwargs):
 
 MAX_VIDEO_BYTES = 250 * 1024 * 1024
 R2_MULTIPART_PART_BYTES = 8 * 1024 * 1024
-R2_PRESIGNED_URL_TTL = 7 * 24 * 60 * 60
 MAX_FALHAS_IA = 3
 MIN_AVISTAMENTOS_IA = 2
 SCORE_DESPACHO_IMEDIATO = DESPACHO_IMEDIATO
@@ -222,15 +222,8 @@ def _criar_cliente_r2():
     )
 
 
-def _url_r2(client, bucket: str, key: str) -> str:
-    public_url = ler_segredo("CLOUDFLARE_R2_PUBLIC_URL").rstrip("/")
-    if public_url:
-        return f"{public_url}/{key}"
-    return client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": bucket, "Key": key},
-        ExpiresIn=R2_PRESIGNED_URL_TTL,
-    )
+def _url_r2(_client, _bucket: str, key: str) -> str:
+    return referencia_armazenada(key)
 
 
 def _host_video_permitido(video_url: str) -> bool:

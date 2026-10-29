@@ -32,6 +32,37 @@ $$;
 GRANT CONNECT ON DATABASE :"dbname" TO pipeline_writer;
 GRANT USAGE ON SCHEMA public TO pipeline_writer;
 -- DELETE não é concedido: qualification/IA não apagam ofertas (ver lifecycle_writer).
-GRANT SELECT, INSERT, UPDATE ON TABLE ofertas TO pipeline_writer;
+-- UPDATE é por coluna: o papel não reescreve id, url, plataforma nem custo.
+GRANT SELECT, INSERT ON TABLE ofertas TO pipeline_writer;
+REVOKE UPDATE ON TABLE ofertas FROM pipeline_writer;
 REVOKE DELETE ON TABLE ofertas FROM pipeline_writer;
+GRANT UPDATE (
+    vezes_avistado,
+    data_ultima_captura,
+    page_id,
+    copy_texto,
+    tipo_cta,
+    url_video_r2,
+    score,
+    phash_criativo,
+    transcricao_video,
+    gancho_3s,
+    nicho,
+    sub_nicho,
+    gatilho_mental,
+    preco_oferta_estimado,
+    margem_estimada_pct,
+    objecoes_quebradas,
+    angulos_alternativos,
+    embedding_analise,
+    embedding_texto_hash,
+    tokens_prompt_ia,
+    tokens_saida_ia,
+    dados_comerciais_ausentes,
+    status_qualificacao,
+    processamento_iniciado_em,
+    processamento_token,
+    falhas_ia,
+    falhas_ia_em
+) ON TABLE ofertas TO pipeline_writer;
 SQL

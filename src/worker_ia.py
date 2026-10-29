@@ -30,6 +30,7 @@ from core.pontuacao import BONUS_ANALISE_IA, TETO_SCORE  # noqa: E402
 from core.secrets import ler_segredo  # noqa: E402
 from schemas import AnaliseAnuncioSchema, nicho_canonico  # noqa: E402
 from src.comercial import qualificar_pagina  # noqa: E402
+from src.midia_r2 import url_leitura  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -351,12 +352,15 @@ def _abrir_stream_video_r2(video_url: str):
 
 def _baixar_video_temporario(video_url_r2: str) -> str:
     """Download em tmpfs com proteção de cota e limpeza em caso de falha[cite: 1]."""
+    url = url_leitura(video_url_r2)
+    if not url:
+        raise ValueError("Não foi possível resolver a URL do vídeo.")
     bytes_baixados = 0
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp_path = tmp.name
-            with _abrir_stream_video_r2(video_url_r2) as response:
+            with _abrir_stream_video_r2(url) as response:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     bytes_baixados += len(chunk)
                     if bytes_baixados > MAX_VIDEO_BYTES:

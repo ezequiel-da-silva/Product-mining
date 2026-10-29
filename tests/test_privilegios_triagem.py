@@ -18,6 +18,41 @@ def test_painel_recebe_dml_na_triagem_e_na_sequence_se_existir():
     assert "sub_nicho" in migracao
 
 
+def _bloco_update(sql: str) -> str:
+    inicio = sql.index("GRANT UPDATE (")
+    fim = sql.index(") ON TABLE ofertas TO pipeline_writer", inicio)
+    return sql[inicio:fim]
+
+
+def test_pipeline_atualiza_por_coluna_e_painel_le_tabela_a_tabela():
+    pipeline = (RAIZ / "infra/init-pipeline-role.sh").read_text(encoding="utf-8")
+    painel = (RAIZ / "infra/init-readonly-role.sh").read_text(encoding="utf-8")
+    migracao = (RAIZ / "infra/migrations/013_privilegios_estreitos.sql").read_text(encoding="utf-8")
+
+    for texto in (pipeline, migracao):
+        bloco = _bloco_update(texto)
+        assert "REVOKE UPDATE ON TABLE ofertas FROM pipeline_writer" in texto
+        for coluna in (
+            "url_video_r2",
+            "preco_oferta_estimado",
+            "tokens_saida_ia",
+            "falhas_ia_em",
+            "processamento_token",
+            "angulos_alternativos",
+        ):
+            assert coluna in bloco
+        for proibida in ("plataforma", "custo_tokens_ia", "engajamento_reacoes", "url_destino"):
+            assert proibida not in bloco
+
+    assert "GRANT SELECT, INSERT, UPDATE ON TABLE ofertas" not in pipeline
+    assert "REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM streamlit_readonly" in painel
+    assert "REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM streamlit_readonly" in migracao
+    assert "ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM streamlit_readonly" in painel
+    assert "GRANT SELECT ON TABLES TO streamlit_readonly" not in painel
+    assert "GRANT SELECT ON TABLE ofertas TO streamlit_readonly" in painel
+    assert "GRANT SELECT ON TABLE ofertas TO streamlit_readonly" in migracao
+
+
 def test_security_md_publica_o_canal_de_reporte():
     texto = (RAIZ / "SECURITY.md").read_text(encoding="utf-8")
     assert "ezekisilva544@gmail.com" in texto
