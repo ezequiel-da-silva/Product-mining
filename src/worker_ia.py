@@ -31,6 +31,7 @@ from core.secrets import ler_segredo  # noqa: E402
 from schemas import AnaliseAnuncioSchema, nicho_canonico  # noqa: E402
 from src.comercial import qualificar_pagina  # noqa: E402
 from src.midia_r2 import url_leitura  # noqa: E402
+from src.phash_visual import LIMIAR_HAMMING  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -193,7 +194,15 @@ FROM ofertas AS origem
 WHERE origem.id = %(id)s
   AND irma.id <> origem.id
   AND irma.status_qualificacao = 'pendente'
-  AND (irma.url_video_r2 = origem.url_video_r2 OR irma.phash_criativo = origem.phash_criativo)
+  AND (
+    irma.url_video_r2 = origem.url_video_r2
+    OR irma.phash_criativo = origem.phash_criativo
+    OR (
+      irma.phash_perceptual IS NOT NULL
+      AND origem.phash_perceptual IS NOT NULL
+      AND bit_count(irma.phash_perceptual # origem.phash_perceptual) <= %(limiar)s
+    )
+  )
 RETURNING irma.id, irma.url_destino;
 """
 
@@ -270,7 +279,7 @@ def persistir_resultado_ia(
             if persisted:
                 cur.execute(
                     SQL_PROPAGAR_IRMAS,
-                    {"id": oferta_id, "bonus": BONUS_ANALISE_IA, "teto": TETO_SCORE},
+                    {"id": oferta_id, "bonus": BONUS_ANALISE_IA, "teto": TETO_SCORE, "limiar": LIMIAR_HAMMING},
                 )
                 irmas = cur.fetchall()
             conn.commit()

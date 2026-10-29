@@ -25,6 +25,7 @@ from core.pontuacao import BONUS_ANALISE_IA, DESPACHO_IMEDIATO, TETO_HEURISTICO,
 from core.secrets import ler_segredo  # noqa: E402
 from src.comercial import qualificar_pagina  # noqa: E402
 from src.midia_r2 import referencia_armazenada  # noqa: E402
+from src.phash_visual import LIMIAR_HAMMING, CapturaQuadro  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -292,13 +293,14 @@ def _abrir_stream_video(video_url: str):
     raise ValueError("O vídeo excedeu o limite de redirecionamentos permitidos.")
 
 
-def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> str:
+def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> tuple[str, str | None]:
     content_length = response.headers.get("Content-Length")
     if content_length and int(content_length) > MAX_VIDEO_BYTES:
         raise ValueError("Vídeo excede o limite de 250 MB.")
 
     response.raw.decode_content = True
     digest = hashlib.sha256()
+    captura = CapturaQuadro()
     multipart = client.create_multipart_upload(Bucket=bucket, Key=object_key, ContentType="video/mp4")
     upload_id = multipart["UploadId"]
     parts = []
@@ -310,6 +312,7 @@ def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> 
             if not chunk:
                 continue
             digest.update(chunk)
+            captura.escrever(chunk)
             bytes_uploaded += len(chunk)
             if bytes_uploaded > MAX_VIDEO_BYTES:
                 raise ValueError("Vídeo excede o limite de 250 MB.")
@@ -338,7 +341,7 @@ def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> 
                 Body=bytes(buffered),
                 ContentType="video/mp4",
             )
-            return digest.hexdigest()
+            return digest.hexdigest(), captura.fechar()
 
         if buffered:
             part_number = len(parts) + 1
@@ -356,27 +359,29 @@ def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> 
             UploadId=upload_id,
             MultipartUpload={"Parts": parts},
         )
-        return digest.hexdigest()
+        return digest.hexdigest(), captura.fechar()
     except Exception:
         try:
             client.abort_multipart_upload(Bucket=bucket, Key=object_key, UploadId=upload_id)
         except (BotoCoreError, ClientError) as error:
             logger.warning("Falha ao abortar multipart do vídeo %s: %s", object_key, error)
         raise
+    finally:
+        captura.encerrar()
 
 
-def _upload_video_r2(video_url: str | None, ad_id: object) -> tuple[str | None, str | None]:
+def _upload_video_r2(video_url: str | None, ad_id: object) -> tuple[str | None, str | None, str | None]:
     if not video_url:
-        return None, None
+        return None, None, None
     if not ad_id:
         logger.warning("Vídeo ignorado: anúncio sem identificador para a chave do objeto R2.")
-        return None, None
+        return None, None, None
     if not _host_video_permitido(video_url):
         logger.warning("URL de vídeo ignorada por não pertencer a um host HTTPS permitido.")
-        return None, None
+        return None, None, None
     if not _r2_configurado():
         logger.warning("Credenciais incompletas do Cloudflare R2; vídeo não enviado.")
-        return None, None
+        return None, None, None
 
     bucket = ler_segredo("CLOUDFLARE_R2_BUCKET")
     safe_ad_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(ad_id or "unknown"))
@@ -386,30 +391,40 @@ def _upload_video_r2(video_url: str | None, ad_id: object) -> tuple[str | None, 
         client = _criar_cliente_r2()
         existing_url = _url_video_existente(client, bucket, object_key)
         if existing_url:
-            return existing_url, None
+            return existing_url, None, None
 
         with _abrir_stream_video(video_url) as response:
-            digest = _enviar_stream_multipart(client, bucket, object_key, response)
+            digest, visual = _enviar_stream_multipart(client, bucket, object_key, response)
 
-        return _url_r2(client, bucket, object_key), digest
+        return _url_r2(client, bucket, object_key), digest, visual
     except (BotoCoreError, ClientError, requests.RequestException, ValueError, KeyError) as error:
         logger.warning("Falha ao enviar o vídeo %s ao Cloudflare R2: %s", object_key, error)
-        return None, None
+        return None, None, None
     except Exception as error:
         logger.exception("Erro inesperado no upload R2 do vídeo %s: %s", object_key, error)
-        return None, None
+        return None, None, None
 
 
-def _deve_analisar(phash: str, oferta_id: int) -> bool:
+def _deve_analisar(phash: str | None, oferta_id: int, visual: str | None = None) -> bool:
+    chave = phash or visual
+    if not chave:
+        return True
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%(phash)s)::bigint)", {"phash": phash})
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%(chave)s)::bigint)", {"chave": chave})
             cur.execute(
                 """
                 SELECT id
                 FROM ofertas
-                WHERE phash_criativo = %(phash)s
-                  AND id <> %(id)s
+                WHERE id <> %(id)s
+                  AND (
+                    (%(phash)s IS NOT NULL AND phash_criativo = %(phash)s)
+                    OR (
+                      %(visual)s::bit(64) IS NOT NULL
+                      AND phash_perceptual IS NOT NULL
+                      AND bit_count(phash_perceptual # %(visual)s::bit(64)) <= %(limiar)s
+                    )
+                  )
                   AND (
                     status_qualificacao IN ('concluido', 'processando_ia')
                     OR (
@@ -421,7 +436,7 @@ def _deve_analisar(phash: str, oferta_id: int) -> bool:
                   )
                 LIMIT 1
                 """,
-                {"phash": phash, "id": oferta_id},
+                {"phash": phash, "visual": visual, "limiar": LIMIAR_HAMMING, "id": oferta_id},
             )
             duplicada = cur.fetchone() is not None
             conn.commit()
@@ -433,6 +448,7 @@ def _persistir_oferta(
     score: int,
     url_video_r2: str | None,
     phash_criativo: str | None,
+    phash_perceptual: str | None = None,
 ) -> dict | None:
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -440,11 +456,12 @@ def _persistir_oferta(
                 """
                 INSERT INTO ofertas (
                     url_destino, page_id, copy_texto, tipo_cta,
-                    url_video_r2, score, phash_criativo
+                    url_video_r2, score, phash_criativo, phash_perceptual
                 )
                 VALUES (
                     %(url_destino)s, %(page_id)s, %(copy_texto)s,
-                    %(tipo_cta)s, %(url_video_r2)s, %(score)s, %(phash_criativo)s
+                    %(tipo_cta)s, %(url_video_r2)s, %(score)s, %(phash_criativo)s,
+                    %(phash_perceptual)s::bit(64)
                 )
                 ON CONFLICT (url_destino) DO UPDATE
                 SET vezes_avistado = ofertas.vezes_avistado + 1,
@@ -454,8 +471,10 @@ def _persistir_oferta(
                     tipo_cta = COALESCE(EXCLUDED.tipo_cta, ofertas.tipo_cta),
                     url_video_r2 = COALESCE(EXCLUDED.url_video_r2, ofertas.url_video_r2),
                     score = GREATEST(ofertas.score, EXCLUDED.score),
-                    phash_criativo = COALESCE(EXCLUDED.phash_criativo, ofertas.phash_criativo)
-                RETURNING id, score, status_qualificacao, phash_criativo, falhas_ia, falhas_ia_em, vezes_avistado;
+                    phash_criativo = COALESCE(EXCLUDED.phash_criativo, ofertas.phash_criativo),
+                    phash_perceptual = COALESCE(EXCLUDED.phash_perceptual, ofertas.phash_perceptual)
+                RETURNING id, score, status_qualificacao, phash_criativo, phash_perceptual,
+                          falhas_ia, falhas_ia_em, vezes_avistado;
                 """,
                 {
                     "url_destino": campos["url_destino"],
@@ -465,6 +484,7 @@ def _persistir_oferta(
                     "url_video_r2": url_video_r2,
                     "score": score,
                     "phash_criativo": phash_criativo,
+                    "phash_perceptual": phash_perceptual,
                 },
             )
             oferta = cur.fetchone()
@@ -513,7 +533,12 @@ def _url_video_ja_analisada(url: str, oferta_id: int) -> bool:
             return ja_analisada
 
 
-def _copiar_enriquecimento(oferta_id: int, url_video_r2: str | None, phash: str | None) -> bool:
+def _copiar_enriquecimento(
+    oferta_id: int,
+    url_video_r2: str | None,
+    phash: str | None,
+    visual: str | None = None,
+) -> bool:
     """Copia só o criativo da irmã e qualifica o preço na página desta oferta."""
     url_destino = None
     with get_pool().connection() as conn:
@@ -541,7 +566,15 @@ def _copiar_enriquecimento(oferta_id: int, url_video_r2: str | None, phash: str 
                     WHERE id <> %(id)s
                       AND status_qualificacao = 'concluido'
                       AND embedding_analise IS NOT NULL
-                      AND (url_video_r2 = %(url)s OR phash_criativo = %(phash)s)
+                      AND (
+                        url_video_r2 = %(url)s
+                        OR phash_criativo = %(phash)s
+                        OR (
+                          %(visual)s::bit(64) IS NOT NULL
+                          AND phash_perceptual IS NOT NULL
+                          AND bit_count(phash_perceptual # %(visual)s::bit(64)) <= %(limiar)s
+                        )
+                      )
                     ORDER BY id
                     LIMIT 1
                 ) AS origem
@@ -553,6 +586,8 @@ def _copiar_enriquecimento(oferta_id: int, url_video_r2: str | None, phash: str 
                     "id": oferta_id,
                     "url": url_video_r2,
                     "phash": phash,
+                    "visual": visual,
+                    "limiar": LIMIAR_HAMMING,
                     "bonus": BONUS_ANALISE_IA,
                     "teto": TETO_SCORE,
                 },
@@ -595,19 +630,20 @@ def avaliar_oferta(self, payload: dict):
 
     try:
         score = _calcular_score(campos)
-        video_r2_url, digest = _upload_video_r2(campos.get("video_url"), campos.get("ad_id"))
-        oferta = _persistir_oferta(campos, score, video_r2_url, digest)
+        video_r2_url, digest, visual_upload = _upload_video_r2(campos.get("video_url"), campos.get("ad_id"))
+        oferta = _persistir_oferta(campos, score, video_r2_url, digest, visual_upload)
         if not oferta:
             logger.error("Upsert não retornou uma oferta para URL %s.", campos["url_destino"])
             raise RuntimeError("O upsert da oferta não retornou o registro persistido.")
 
         phash = digest or oferta.get("phash_criativo")
-        if phash and not _deve_analisar(phash, oferta["id"]):
+        visual = visual_upload or oferta.get("phash_perceptual")
+        if (phash or visual) and not _deve_analisar(phash, oferta["id"], visual):
             return {
                 "status": "duplicate_creative",
                 "oferta_id": oferta["id"],
                 "score": oferta["score"],
-                "enriquecida": _copiar_enriquecimento(oferta["id"], video_r2_url, phash),
+                "enriquecida": _copiar_enriquecimento(oferta["id"], video_r2_url, phash, visual),
             }
 
         if (
@@ -622,7 +658,7 @@ def avaliar_oferta(self, payload: dict):
                     "status": "duplicate_video_url",
                     "oferta_id": oferta["id"],
                     "score": oferta["score"],
-                    "enriquecida": _copiar_enriquecimento(oferta["id"], video_r2_url, phash),
+                    "enriquecida": _copiar_enriquecimento(oferta["id"], video_r2_url, phash, visual),
                 }
             app.send_task(
                 "src.worker_ia.processar_anuncio_multimodal",

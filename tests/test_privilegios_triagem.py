@@ -56,6 +56,11 @@ def test_pipeline_atualiza_por_coluna_e_painel_le_tabela_a_tabela():
     assert "ADD COLUMN IF NOT EXISTS preco_moeda" in moeda
     assert "GRANT UPDATE (preco_moeda)" in moeda
     assert "pg_roles" in moeda
+    assert "phash_perceptual" in _bloco_update(pipeline)
+    perceptual = (RAIZ / "infra/migrations/015_phash_perceptual.sql").read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS phash_perceptual BIT(64)" in perceptual
+    assert "GRANT UPDATE (phash_perceptual)" in perceptual
+    assert "pg_roles" in perceptual
 
 
 def test_security_md_publica_o_canal_de_reporte():

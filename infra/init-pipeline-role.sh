@@ -45,6 +45,7 @@ GRANT UPDATE (
     url_video_r2,
     score,
     phash_criativo,
+    phash_perceptual,
     transcricao_video,
     gancho_3s,
     nicho,

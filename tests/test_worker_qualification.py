@@ -131,7 +131,7 @@ def test_upload_r2_sem_credenciais_nao_faz_requisicao(monkeypatch):
         assert _upload_video_r2(
             "https://scontent.fbcdn.net/video.mp4",
             "ad-123",
-        ) == (None, None)
+        ) == (None, None, None)
 
     get_video.assert_not_called()
 
@@ -147,7 +147,7 @@ def test_upload_stream_multipart_divide_em_partes(monkeypatch):
     client.create_multipart_upload.return_value = {"UploadId": "upload-1"}
     client.upload_part.side_effect = [{"ETag": "etag-1"}, {"ETag": "etag-2"}]
 
-    digest = _enviar_stream_multipart(client, "bucket", "videos/ad.mp4", response)
+    digest, visual = _enviar_stream_multipart(client, "bucket", "videos/ad.mp4", response)
 
     assert [call.kwargs["Body"] for call in client.upload_part.call_args_list] == [
         b"1234",
@@ -156,6 +156,7 @@ def test_upload_stream_multipart_divide_em_partes(monkeypatch):
     client.complete_multipart_upload.assert_called_once()
     client.abort_multipart_upload.assert_not_called()
     assert digest == hashlib.sha256(b"1234567").hexdigest()
+    assert visual is None
 
 
 def test_persistencia_usa_upsert_e_incrementa_avistamentos(monkeypatch):
@@ -189,6 +190,7 @@ def test_persistencia_usa_upsert_e_incrementa_avistamentos(monkeypatch):
     assert "ON CONFLICT (url_destino) DO UPDATE" in query
     assert "vezes_avistado = ofertas.vezes_avistado + 1" in query
     assert "COALESCE(EXCLUDED.phash_criativo, ofertas.phash_criativo)" in query
+    assert "COALESCE(EXCLUDED.phash_perceptual, ofertas.phash_perceptual)" in query
     assert parameters["score"] == 55
     assert parameters["url_video_r2"] == "https://cdn.example/videos/ad-1.mp4"
     assert parameters["phash_criativo"] == "ab" * 32
@@ -209,7 +211,7 @@ def test_score_50_com_video_persistido_despacha_para_ia(monkeypatch, caplog):
             "body": {"text": "Copy"},
         },
     }
-    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None, None))
     monkeypatch.setattr(
         worker,
         "_persistir_oferta",
@@ -240,7 +242,7 @@ def test_score_50_com_video_persistido_despacha_para_ia(monkeypatch, caplog):
 def test_primeiro_avistamento_nao_despacha_ia(monkeypatch):
     import src.worker_qualification as worker
 
-    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None, None))
     monkeypatch.setattr(
         worker,
         "_persistir_oferta",
@@ -266,7 +268,7 @@ def test_score_75_despacha_no_primeiro_avistamento(monkeypatch, caplog):
     import src.worker_qualification as worker
 
     monkeypatch.setattr(worker, "_calcular_score", lambda *_args: 75)
-    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None, None))
     monkeypatch.setattr(
         worker,
         "_persistir_oferta",
@@ -298,7 +300,7 @@ def test_score_75_despacha_no_primeiro_avistamento(monkeypatch, caplog):
 def test_url_de_video_ja_analisada_nao_despacha_ia(monkeypatch):
     import src.worker_qualification as worker
 
-    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None, None))
     monkeypatch.setattr(
         worker,
         "_persistir_oferta",
@@ -327,7 +329,7 @@ def test_url_de_video_ja_analisada_nao_despacha_ia(monkeypatch):
 
     assert result == {"status": "duplicate_video_url", "oferta_id": 42, "score": 55, "enriquecida": True}
     send_task.assert_not_called()
-    copiar.assert_called_once_with(42, "https://cdn.test/video.mp4", None)
+    copiar.assert_called_once_with(42, "https://cdn.test/video.mp4", None, None)
     consulta, params = cursor.execute.call_args_list[1].args
     assert "url_video_r2 = %(url)s" in consulta
     assert "processando_ia" in consulta
@@ -360,6 +362,8 @@ def test_copiar_enriquecimento_so_conclui_pendente_a_partir_de_irma_concluida(mo
     assert "sub_nicho = origem.sub_nicho" in consulta
     assert "LEAST(destino.score + %(bonus)s, %(teto)s)" in consulta
     assert "preco_oferta_estimado" not in consulta
+    assert "bit_count(phash_perceptual #" in consulta
+    assert "phash_perceptual IS NOT NULL" in consulta
     assert "margem_estimada_pct" not in consulta
     assert params["id"] == 42
     assert params["bonus"] == 25
@@ -396,7 +400,7 @@ def test_mesmo_digest_concluido_nao_despacha_ia(monkeypatch):
         },
     }
     digest = "cd" * 32
-    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", digest))
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", digest, None))
     monkeypatch.setattr(
         worker,
         "_persistir_oferta",
@@ -413,14 +417,14 @@ def test_mesmo_digest_concluido_nao_despacha_ia(monkeypatch):
     assert result["status"] == "duplicate_creative"
     assert result["oferta_id"] == 99
     assert result["enriquecida"] is False
-    copiar.assert_called_once_with(99, "https://cdn.test/video.mp4", digest)
+    copiar.assert_called_once_with(99, "https://cdn.test/video.mp4", digest, None)
     send_task.assert_not_called()
 
 
 def test_recaptura_usa_phash_persistido_para_deduplicar(monkeypatch):
     import src.worker_qualification as worker
 
-    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None, None))
     monkeypatch.setattr(
         worker,
         "_persistir_oferta",
@@ -441,7 +445,7 @@ def test_recaptura_usa_phash_persistido_para_deduplicar(monkeypatch):
     result = avaliar_oferta.run(_payload_qualificacao())
 
     assert result == {"status": "duplicate_creative", "oferta_id": 99, "score": 55, "enriquecida": True}
-    deve_analisar.assert_called_once_with("cd" * 32, 99)
+    deve_analisar.assert_called_once_with("cd" * 32, 99, None)
     send_task.assert_not_called()
 
 
@@ -452,7 +456,7 @@ def test_recaptura_usa_phash_persistido_para_deduplicar(monkeypatch):
 def test_oferta_nao_e_redespachada_quando_nao_esta_elegivel(monkeypatch, status, falhas_ia):
     import src.worker_qualification as worker
 
-    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None))
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None, None))
     monkeypatch.setattr(
         worker,
         "_persistir_oferta",
@@ -497,7 +501,7 @@ def test_oferta_pendente_mais_antiga_nao_despacha_ia(monkeypatch):
         },
     }
     digest = "ab" * 32
-    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", digest))
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", digest, None))
     monkeypatch.setattr(
         worker,
         "_persistir_oferta",
@@ -529,7 +533,14 @@ def test_oferta_pendente_mais_antiga_nao_despacha_ia(monkeypatch):
     assert "pg_advisory_xact_lock" in lock_sql
     assert "processando_ia" in consulta
     assert "score >= 50" in consulta
-    assert cursor.execute.call_args_list[1].args[1] == {"phash": digest, "id": 99}
+    assert cursor.execute.call_args_list[1].args[1] == {
+        "phash": digest,
+        "visual": None,
+        "limiar": 8,
+        "id": 99,
+    }
+    assert "bit_count" in consulta
+    assert "phash_criativo = %(phash)s" in consulta
 
 
 def _payload_qualificacao():
@@ -548,7 +559,7 @@ def _payload_qualificacao():
 def _falha_na_persistencia(monkeypatch):
     import src.worker_qualification as worker
 
-    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_args: (None, None))
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_args: (None, None, None))
 
     def _falha(*_args, **_kwargs):
         raise RuntimeError("banco fora")

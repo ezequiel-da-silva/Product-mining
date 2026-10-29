@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Instala dependências do sistema necessárias para compilar algumas bibliotecas Python (se aplicável)
-RUN apt-get update && apt-get install -y gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y gcc libpq-dev ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # Copia e instala as dependências do projeto (assumindo que irá criar um requirements.txt na raiz)
 # O worker precisa de: celery, redis, psycopg-pool, psycopg[binary], google-generativeai, pydantic, requests

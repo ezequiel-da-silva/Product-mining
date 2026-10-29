@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS ofertas (
     tipo_checkout VARCHAR(50),
     tem_pixel BOOLEAN DEFAULT FALSE,
     phash_criativo VARCHAR(64),
+    phash_perceptual BIT(64),
     url_video_r2 TEXT,
 
     -- Camada de Inteligência Artificial Multimodal
@@ -130,6 +131,9 @@ END $$;
 ALTER TABLE ofertas
     ADD COLUMN IF NOT EXISTS preco_moeda VARCHAR(3);
 
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS phash_perceptual BIT(64);
+
 DO $$
 BEGIN
     ALTER TABLE ofertas
@@ -158,5 +162,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('011_criativo_lp_score'),
     ('012_nicho_canonico'),
     ('013_privilegios_estreitos'),
-    ('014_preco_moeda')
+    ('014_preco_moeda'),
+    ('015_phash_perceptual')
 ON CONFLICT (versao) DO NOTHING;
