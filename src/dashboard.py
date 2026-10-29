@@ -1,15 +1,14 @@
-import hashlib
-import hmac
+import html
 import json
 import logging
 import math
 import os
 import secrets
-import time
 from decimal import ROUND_HALF_UP, Decimal
 
 import psycopg
 import streamlit as st
+from core.pontuacao import NOTA_MINIMA_PAINEL
 from core.secrets import ler_segredo
 from google import genai
 from google.genai import types
@@ -27,21 +26,20 @@ LEGENDA_BUSCA = (
 )
 PRECO_AUSENTE = "não identificado"
 FILTRO_TODOS = "Todos"
-FILTRO_NOTA = "Nota maior que 70"
-NOTA_MINIMA = 70
+FILTRO_NOTA = "Nota de 75 ou mais"
+NOTA_MINIMA = NOTA_MINIMA_PAINEL
 BOTAO_DETALHES = "Ver detalhes"
 LARGURA_VIDEO = 420
 ALTURA_VIDEO = 280
 GANCHO_LIMITE = 160
-SESSAO_QUERY = "sessao"
-SESSAO_SEGUNDOS = 12 * 60 * 60
 MODELO_EMBEDDING = "gemini-embedding-2"
 DIMENSAO_EMBEDDING = 768
 PAGE_SIZE = 10
 COLUNAS_OFERTA = """
     id, nicho, gancho_3s, gatilho_mental, url_destino, copy_texto,
     transcricao_video, url_video_r2, objecoes_quebradas, angulos_alternativos,
-    preco_oferta_estimado, score, margem_estimada_pct, data_ultima_captura
+    preco_oferta_estimado, score, margem_estimada_pct, data_ultima_captura,
+    dados_comerciais_ausentes
 """
 ROTULOS_OFERTAS = {
     "id": "Identificador",
@@ -117,60 +115,29 @@ NICHOS_CONCLUIDOS_SQL = """
 """
 
 
-def _assinar_sessao(segredo: str, validade: int) -> str:
-    mac = hmac.new(segredo.encode(), str(validade).encode(), hashlib.sha256).hexdigest()
-    return f"{validade}.{mac}"
-
-
-def _sessao_valida(token: str, segredo: str, agora: float | None = None) -> bool:
-    if not token or not segredo or "." not in token:
-        return False
-    validade_texto, mac = token.split(".", 1)
-    if not validade_texto.isdigit():
-        return False
-    validade = int(validade_texto)
-    if validade <= (time.time() if agora is None else agora):
-        return False
-    esperada = hmac.new(segredo.encode(), validade_texto.encode(), hashlib.sha256).hexdigest()
-    if len(mac) != len(esperada):
-        return False
-    return secrets.compare_digest(mac, esperada)
-
-
-def _token_da_url() -> str:
-    bruto = st.query_params.get(SESSAO_QUERY, "")
-    if isinstance(bruto, (list, tuple)):
-        return str(bruto[0]) if bruto else ""
-    return str(bruto or "")
-
-
-def _gravar_sessao(segredo: str) -> None:
-    validade = int(time.time()) + SESSAO_SEGUNDOS
-    st.query_params[SESSAO_QUERY] = _assinar_sessao(segredo, validade)
+def _descartar_credencial_na_url() -> None:
+    if "sessao" in st.query_params:
+        del st.query_params["sessao"]
 
 
 def _encerrar_sessao() -> None:
     st.session_state["dashboard_authenticated"] = False
-    if SESSAO_QUERY in st.query_params:
-        del st.query_params[SESSAO_QUERY]
+    _descartar_credencial_na_url()
 
 
 def _require_dashboard_auth() -> None:
     expected = os.environ.get("DASHBOARD_PASSWORD", "")
+    _descartar_credencial_na_url()
     if not expected:
         st.error("O dashboard não está configurado.")
         st.stop()
     if st.session_state.get("dashboard_authenticated"):
-        return
-    if _sessao_valida(_token_da_url(), expected):
-        st.session_state["dashboard_authenticated"] = True
         return
 
     st.title(TITULO_PAINEL)
     password = st.text_input("Senha", type="password")
     if st.button("Entrar"):
         if secrets.compare_digest(password, expected):
-            _gravar_sessao(expected)
             st.session_state["dashboard_authenticated"] = True
             st.rerun()
         st.error("Senha incorreta.")
@@ -244,30 +211,40 @@ def _clausula_filtro(filtro: str | None) -> tuple[str, tuple]:
     if not filtro or filtro == FILTRO_TODOS:
         return "", ()
     if filtro == FILTRO_NOTA:
-        return "score > %s", (NOTA_MINIMA,)
+        return "score >= %s", (NOTA_MINIMA,)
     return "nicho = %s", (filtro,)
 
 
-def _sql_com_filtro(consulta: str, clausula: str) -> str:
-    if not clausula:
+def _sql_com_filtro(consulta: str, clausula: str, ocultar_descartadas: bool = True) -> str:
+    partes = []
+    if clausula:
+        partes.append(clausula)
+    if ocultar_descartadas:
+        partes.append(
+            "NOT EXISTS (SELECT 1 FROM triagem_oferta AS triagem "
+            "WHERE triagem.oferta_id = ofertas.id AND triagem.estado = 'descartada')"
+        )
+    if not partes:
         return consulta
     marcador = "\n    ORDER BY"
     if marcador not in consulta:
         raise ValueError("A consulta filtrada precisa de ORDER BY.")
-    return consulta.replace(marcador, f"\n      AND {clausula}{marcador}", 1)
+    extra = "\n      AND " + "\n      AND ".join(partes)
+    return consulta.replace(marcador, f"{extra}{marcador}", 1)
 
 
 def consultar_ofertas_recentes(
     conn,
     cursor: tuple[object, int] | None = None,
     filtro: str | None = None,
+    ocultar_descartadas: bool = True,
 ) -> tuple[list[dict], bool]:
     clausula, extra = _clausula_filtro(filtro)
     if cursor is None:
-        consulta = _sql_com_filtro(OFERTAS_RECENTES_SQL, clausula)
+        consulta = _sql_com_filtro(OFERTAS_RECENTES_SQL, clausula, ocultar_descartadas)
         parametros = (*extra, PAGE_SIZE + 1)
     else:
-        consulta = _sql_com_filtro(OFERTAS_RECENTES_CURSOR_SQL, clausula)
+        consulta = _sql_com_filtro(OFERTAS_RECENTES_CURSOR_SQL, clausula, ocultar_descartadas)
         parametros = (cursor[0], cursor[1], *extra, PAGE_SIZE + 1)
     with conn.cursor() as cur:
         cur.execute(consulta, parametros)
@@ -279,14 +256,15 @@ def consultar_ofertas_por_similaridade(
     vetor: list[float],
     cursor: tuple[float, int] | None = None,
     filtro: str | None = None,
+    ocultar_descartadas: bool = True,
 ) -> tuple[list[dict], bool]:
     clausula, extra = _clausula_filtro(filtro)
     vetor_pg = _vetor_para_pg(vetor)
     if cursor is None:
-        consulta = _sql_com_filtro(OFERTAS_BUSCA_SQL, clausula)
+        consulta = _sql_com_filtro(OFERTAS_BUSCA_SQL, clausula, ocultar_descartadas)
         parametros = (vetor_pg, *extra, vetor_pg, PAGE_SIZE + 1)
     else:
-        consulta = _sql_com_filtro(OFERTAS_BUSCA_CURSOR_SQL, clausula)
+        consulta = _sql_com_filtro(OFERTAS_BUSCA_CURSOR_SQL, clausula, ocultar_descartadas)
         parametros = (vetor_pg, vetor_pg, cursor[0], cursor[1], *extra, vetor_pg, PAGE_SIZE + 1)
     with conn.cursor() as cur:
         cur.execute(consulta, parametros)
@@ -310,6 +288,56 @@ def formatar_preco_br(valor: object) -> str | None:
 
 def texto_preco(valor: object) -> str:
     return formatar_preco_br(valor) or PRECO_AUSENTE
+
+
+def texto_nota(nota: object) -> str:
+    if nota is None:
+        return "—"
+    return f"{nota}/100"
+
+
+def rotulo_margem(valor: object) -> str:
+    if valor is None:
+        return "Margem não identificada"
+    numero = int(valor)
+    if numero >= 60:
+        faixa = "alta"
+    elif numero >= 40:
+        faixa = "média"
+    else:
+        faixa = "baixa"
+    return f"Margem {faixa}: {numero}%"
+
+
+def checkout_detectado(url: object) -> str | None:
+    if not isinstance(url, str):
+        return None
+    texto = url.lower()
+    for marcador, nome in (
+        ("shopify", "Shopify"),
+        ("yampi", "Yampi"),
+        ("cartpanda", "CartPanda"),
+        ("nuvemshop", "Nuvemshop"),
+        ("tiendanube", "Tiendanube"),
+        ("woocommerce", "WooCommerce"),
+    ):
+        if marcador in texto:
+            return nome
+    return None
+
+
+def texto_comercial(oferta: dict) -> str:
+    if oferta.get("dados_comerciais_ausentes"):
+        return "Dados comerciais ausentes"
+    return texto_preco(oferta.get("preco_oferta_estimado"))
+
+
+def _link_loja(url: str) -> None:
+    seguro = html.escape(url, quote=True)
+    st.markdown(
+        f'<a href="{seguro}" target="_blank" rel="noopener noreferrer">Abrir loja</a>',
+        unsafe_allow_html=True,
+    )
 
 
 def similaridade_percentual(distancia: object) -> float:
@@ -376,13 +404,13 @@ def _escrever_angulos(valor: object) -> None:
 def _dialogo_oferta(oferta: dict) -> None:
     st.subheader(oferta.get("nicho") or "Oferta")
     nota = oferta.get("score")
-    nota_texto = f"{nota}/100" if nota is not None else "—"
     st.caption(
-        f"{ROTULOS_OFERTAS['score']}: {nota_texto} · "
+        f"{ROTULOS_OFERTAS['score']}: {texto_nota(nota)} · "
         f"{ROTULOS_OFERTAS['data_ultima_captura']}: {formatar_data_card(oferta.get('data_ultima_captura'))}"
     )
     video = _url_http(oferta.get("url_video_r2"))
     if video:
+        st.caption("Prévia do vídeo do anúncio")
         st.html(
             "<style>"
             "[data-testid='stDialog'] video[data-testid='stVideo'] {"
@@ -403,12 +431,11 @@ def _dialogo_oferta(oferta: dict) -> None:
     with margem:
         with st.container(border=True):
             st.caption(ROTULOS_OFERTAS["margem_estimada_pct"])
-            valor_margem = oferta.get("margem_estimada_pct")
-            st.write(f"{valor_margem}%" if valor_margem is not None else "—")
+            st.write(rotulo_margem(oferta.get("margem_estimada_pct")))
     with preco:
         with st.container(border=True):
             st.caption(ROTULOS_OFERTAS["preco_oferta_estimado"])
-            st.write(texto_preco(oferta.get("preco_oferta_estimado")))
+            st.write(texto_comercial(oferta))
 
     gancho, transcricao = st.columns(2, vertical_alignment="top")
     with gancho:
@@ -436,7 +463,7 @@ def _dialogo_oferta(oferta: dict) -> None:
 
     url = _url_http(oferta.get("url_destino"))
     if url:
-        st.link_button(ROTULOS_OFERTAS["url_destino"], url)
+        _link_loja(url)
 
 
 def _zerar_paginacao() -> None:
@@ -470,7 +497,7 @@ def _sincronizar_filtro(opcoes: list[str]) -> str:
     return filtro
 
 
-def _carregar_proxima_pagina(conn, filtro: str | None) -> None:
+def _carregar_proxima_pagina(conn, filtro: str | None, ocultar_descartadas: bool = True) -> None:
     modo = st.session_state["ofertas_modo"]
     cursor = st.session_state["ofertas_cursor"]
     if modo == "busca":
@@ -479,9 +506,10 @@ def _carregar_proxima_pagina(conn, filtro: str | None) -> None:
             st.session_state["ofertas_vetor"],
             cursor,
             filtro,
+            ocultar_descartadas,
         )
     else:
-        ofertas, tem_mais = consultar_ofertas_recentes(conn, cursor, filtro)
+        ofertas, tem_mais = consultar_ofertas_recentes(conn, cursor, filtro, ocultar_descartadas)
 
     st.session_state["ofertas_resultados"].extend(ofertas)
     if ofertas:
@@ -494,24 +522,172 @@ def _carregar_proxima_pagina(conn, filtro: str | None) -> None:
     st.session_state["ofertas_inicializadas"] = True
 
 
-def _mostrar_cards(ofertas: list[dict], em_busca: bool) -> dict | None:
+def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str]) -> dict | None:
     escolhida = None
     for inicio in range(0, len(ofertas), 3):
         colunas = st.columns(3, vertical_alignment="top")
         for deslocamento, oferta in enumerate(ofertas[inicio : inicio + 3]):
             with colunas[deslocamento]:
                 with st.container(border=True):
-                    st.markdown(f"**{oferta.get('nicho') or '—'}**")
-                    nota = oferta.get("score")
-                    st.markdown(f"{ROTULOS_OFERTAS['score']}: {nota if nota is not None else '—'}")
+                    nicho = oferta.get("nicho") or "—"
+                    oferta_id = oferta.get("id")
+                    st.markdown(f"**{nicho}**")
+                    st.caption(texto_comercial(oferta))
+                    st.caption(rotulo_margem(oferta.get("margem_estimada_pct")))
+                    checkout = checkout_detectado(oferta.get("url_destino"))
+                    if checkout:
+                        st.caption(f"Checkout: {checkout}")
+                    st.markdown(f"{ROTULOS_OFERTAS['score']}: {texto_nota(oferta.get('score'))}")
                     if em_busca and oferta.get("distancia") is not None:
                         percentual = similaridade_percentual(oferta["distancia"])
                         st.caption(f"{ROTULOS_OFERTAS['similaridade_pct']}: {percentual:.0f}%")
+                    estado = triagem.get(oferta_id)
+                    if estado == "estrelada":
+                        st.caption("Salva")
+                    elif estado == "testando":
+                        st.caption("Em teste")
                     st.write(gancho_curto(oferta.get("gancho_3s")))
                     st.caption(formatar_data_card(oferta.get("data_ultima_captura")))
-                    if st.button(BOTAO_DETALHES, key=f"detalhe-{oferta.get('id')}", width="stretch"):
-                        escolhida = oferta
+                    url = _url_http(oferta.get("url_destino"))
+                    if url:
+                        _link_loja(url)
+                    if st.button(f"{BOTAO_DETALHES} de {nicho}", key=f"detalhe-{oferta_id}", width="stretch"):
+                        escolhida = {"tipo": "detalhe", "oferta": oferta}
+                    salvar, descartar, testar = st.columns(3)
+                    with salvar:
+                        if st.button("Salvar", key=f"salvar-{oferta_id}"):
+                            escolhida = {"tipo": "triagem", "id": oferta_id, "estado": "estrelada"}
+                    with descartar:
+                        if st.button("Descartar", key=f"descartar-{oferta_id}"):
+                            escolhida = {"tipo": "triagem", "id": oferta_id, "estado": "descartada"}
+                    with testar:
+                        if st.button("Testando", key=f"testando-{oferta_id}"):
+                            escolhida = {"tipo": "triagem", "id": oferta_id, "estado": "testando"}
     return escolhida
+
+
+SQL_TRIAGEM = """
+SELECT oferta_id, estado
+FROM triagem_oferta
+WHERE oferta_id = ANY(%s)
+"""
+
+SQL_DEFINIR_TRIAGEM = """
+INSERT INTO triagem_oferta (oferta_id, estado)
+VALUES (%s, %s)
+ON CONFLICT (oferta_id) DO UPDATE
+SET estado = EXCLUDED.estado,
+    atualizado_em = CURRENT_TIMESTAMP
+"""
+
+SQL_REMOVER_TRIAGEM = "DELETE FROM triagem_oferta WHERE oferta_id = %s AND estado = %s"
+
+SQL_OPERACAO_STATUS = """
+SELECT status_qualificacao, COUNT(*) AS total
+FROM ofertas
+GROUP BY status_qualificacao
+ORDER BY status_qualificacao
+"""
+
+SQL_OPERACAO_FALHAS = "SELECT COUNT(*) AS total FROM ofertas WHERE falhas_ia > 0"
+
+SQL_OPERACAO_TOKENS = """
+SELECT COALESCE(SUM(tokens_prompt_ia), 0) AS prompt,
+       COALESCE(SUM(tokens_saida_ia), 0) AS saida
+FROM ofertas
+WHERE data_ultima_captura >= date_trunc('month', CURRENT_TIMESTAMP)
+"""
+
+
+def _triagem_por_oferta(conn, ofertas: list[dict]) -> dict[int, str]:
+    ids = [oferta["id"] for oferta in ofertas if oferta.get("id") is not None]
+    if not ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(SQL_TRIAGEM, (ids,))
+        return {linha["oferta_id"]: linha["estado"] for linha in cur.fetchall()}
+
+
+def _definir_triagem(conn, oferta_id: int, estado: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(SQL_REMOVER_TRIAGEM, (oferta_id, estado))
+        if cur.rowcount == 0:
+            cur.execute(SQL_DEFINIR_TRIAGEM, (oferta_id, estado))
+    conn.commit()
+
+
+def _painel_operacao(conn) -> None:
+    st.header("Operação do pipeline")
+    st.caption("Contagens da fila e tokens de IA gravados neste mês.")
+    with conn.cursor() as cur:
+        cur.execute(SQL_OPERACAO_STATUS)
+        status = cur.fetchall()
+        cur.execute(SQL_OPERACAO_FALHAS)
+        falhas = cur.fetchone()
+        cur.execute(SQL_OPERACAO_TOKENS)
+        tokens = cur.fetchone()
+    if status:
+        colunas = st.columns(len(status))
+        for coluna, linha in zip(colunas, status, strict=False):
+            with coluna:
+                st.metric(str(linha["status_qualificacao"]), int(linha["total"]))
+    else:
+        st.info("Nenhuma oferta na base.")
+    st.metric("Ofertas com falha de IA", int((falhas or {}).get("total") or 0))
+    prompt = int((tokens or {}).get("prompt") or 0)
+    saida = int((tokens or {}).get("saida") or 0)
+    st.caption(f"Tokens neste mês: {prompt} de prompt e {saida} de resposta.")
+
+
+def _painel_ofertas(conn) -> None:
+    if "ofertas_modo" not in st.session_state:
+        _reiniciar_listagem()
+    with st.form("busca_semantica"):
+        frase = st.text_input(
+            "Buscar por nicho, promessa, gancho ou necessidade",
+            value=st.session_state["ofertas_frase"],
+        )
+        buscar = st.form_submit_button("Buscar")
+    mostrar_descartadas = st.checkbox("Mostrar descartadas", key="mostrar_descartadas")
+    if st.session_state.get("descartadas_vistas") != mostrar_descartadas:
+        if "descartadas_vistas" in st.session_state:
+            _zerar_paginacao()
+        st.session_state["descartadas_vistas"] = mostrar_descartadas
+
+    if buscar:
+        frase = _normalizar_frase_busca(frase)
+        vetor = gerar_embedding_busca(frase) if frase else None
+        _reiniciar_listagem(frase, vetor)
+
+    opcoes = _opcoes_filtro(listar_nichos_concluidos(conn))
+    filtro = _sincronizar_filtro(opcoes)
+    filtro_consulta = None if filtro == FILTRO_TODOS else filtro
+    ocultar_descartadas = not mostrar_descartadas
+    if not st.session_state["ofertas_inicializadas"]:
+        _carregar_proxima_pagina(conn, filtro_consulta, ocultar_descartadas)
+
+    ofertas = st.session_state["ofertas_resultados"]
+    if not ofertas:
+        st.info("Nenhuma oferta concluída encontrada.")
+        return
+
+    em_busca = st.session_state["ofertas_modo"] == "busca"
+    if em_busca:
+        st.header(f'Resultados para "{st.session_state["ofertas_frase"]}"')
+        st.caption("Ordenados por similaridade semântica.")
+    else:
+        st.header(TITULO_OFERTAS_RECENTES)
+        st.caption(OFERTAS_RECENTES_LEGENDA)
+    triagem = _triagem_por_oferta(conn, ofertas)
+    escolhida = _mostrar_cards(ofertas, em_busca, triagem)
+    if escolhida and escolhida["tipo"] == "detalhe":
+        _dialogo_oferta(escolhida["oferta"])
+    elif escolhida and escolhida["tipo"] == "triagem":
+        _definir_triagem(conn, int(escolhida["id"]), escolhida["estado"])
+        st.rerun()
+    if st.session_state["ofertas_tem_mais"] and st.button("Carregar mais"):
+        _carregar_proxima_pagina(conn, filtro_consulta, ocultar_descartadas)
+        st.rerun()
 
 
 def main() -> None:
@@ -527,46 +703,12 @@ def main() -> None:
     st.caption(LEGENDA_BUSCA)
 
     try:
-        if "ofertas_modo" not in st.session_state:
-            _reiniciar_listagem()
-
-        with st.form("busca_semantica"):
-            frase = st.text_input(
-                "Buscar por nicho, promessa, gancho ou necessidade",
-                value=st.session_state["ofertas_frase"],
-            )
-            buscar = st.form_submit_button("Buscar")
-
-        if buscar:
-            frase = _normalizar_frase_busca(frase)
-            vetor = gerar_embedding_busca(frase) if frase else None
-            _reiniciar_listagem(frase, vetor)
-
         conn = get_connection()
-        opcoes = _opcoes_filtro(listar_nichos_concluidos(conn))
-        filtro = _sincronizar_filtro(opcoes)
-        filtro_consulta = None if filtro == FILTRO_TODOS else filtro
-        if not st.session_state["ofertas_inicializadas"]:
-            _carregar_proxima_pagina(conn, filtro_consulta)
-
-        ofertas = st.session_state["ofertas_resultados"]
-        if ofertas:
-            em_busca = st.session_state["ofertas_modo"] == "busca"
-            if em_busca:
-                st.header(f'Resultados para "{st.session_state["ofertas_frase"]}"')
-                st.caption("Ordenados por similaridade semântica.")
-            else:
-                st.header(TITULO_OFERTAS_RECENTES)
-                st.caption(OFERTAS_RECENTES_LEGENDA)
-            escolhida = _mostrar_cards(ofertas, em_busca)
-            if escolhida is not None:
-                _dialogo_oferta(escolhida)
-            if st.session_state["ofertas_tem_mais"] and st.button("Carregar mais"):
-                _carregar_proxima_pagina(conn, filtro_consulta)
-                st.rerun()
-        else:
-            st.info("Nenhuma oferta concluída encontrada.")
-
+        aba_ofertas, aba_operacao = st.tabs(["Ofertas", "Operação"])
+        with aba_ofertas:
+            _painel_ofertas(conn)
+        with aba_operacao:
+            _painel_operacao(conn)
     except Exception:
         logger.exception("Falha ao consultar ofertas no dashboard.")
         st.error("Não foi possível carregar as ofertas.")

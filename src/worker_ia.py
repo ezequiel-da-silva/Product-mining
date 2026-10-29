@@ -26,8 +26,10 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from core.celery_app import app  # noqa: E402
+from core.pontuacao import BONUS_ANALISE_IA, TETO_SCORE  # noqa: E402
 from core.secrets import ler_segredo  # noqa: E402
 from schemas import AnaliseAnuncioSchema  # noqa: E402
+from src.comercial import qualificar_pagina  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -176,21 +178,21 @@ SET transcricao_video = origem.transcricao_video,
     gancho_3s = origem.gancho_3s,
     nicho = origem.nicho,
     gatilho_mental = origem.gatilho_mental,
-    preco_oferta_estimado = NULL,
-    margem_estimada_pct = NULL,
     objecoes_quebradas = origem.objecoes_quebradas,
     angulos_alternativos = origem.angulos_alternativos,
     embedding_analise = origem.embedding_analise,
     embedding_texto_hash = origem.embedding_texto_hash,
-    score = LEAST(irma.score + 20, 120),
-    status_qualificacao = 'concluido',
+    score = LEAST(irma.score + %(bonus)s, %(teto)s),
+    status_qualificacao = 'pendente_lp',
+    dados_comerciais_ausentes = FALSE,
     processamento_iniciado_em = NULL,
     processamento_token = NULL
 FROM ofertas AS origem
 WHERE origem.id = %(id)s
   AND irma.id <> origem.id
   AND irma.status_qualificacao = 'pendente'
-  AND (irma.url_video_r2 = origem.url_video_r2 OR irma.phash_criativo = origem.phash_criativo);
+  AND (irma.url_video_r2 = origem.url_video_r2 OR irma.phash_criativo = origem.phash_criativo)
+RETURNING irma.id, irma.url_destino;
 """
 
 
@@ -223,9 +225,10 @@ def persistir_resultado_ia(
                     tokens_prompt_ia = %(tokens_prompt)s,
                     tokens_saida_ia = %(tokens_saida)s,
                     score = CASE
-                        WHEN status_qualificacao != 'concluido' THEN score + 20
+                        WHEN status_qualificacao != 'concluido' THEN LEAST(score + %(bonus)s, %(teto)s)
                         ELSE score
                     END,
+                    dados_comerciais_ausentes = (%(preco)s IS NULL),
                     status_qualificacao = 'concluido',
                     processamento_iniciado_em = NULL,
                     processamento_token = NULL
@@ -247,16 +250,24 @@ def persistir_resultado_ia(
                     "tokens_saida": uso_tokens.get("saida"),
                     "token": token,
                     "id": oferta_id,
+                    "bonus": BONUS_ANALISE_IA,
+                    "teto": TETO_SCORE,
                 },
             )
             persisted = cur.rowcount == 1
-            irmas = 0
+            irmas = []
             if persisted:
-                cur.execute(SQL_PROPAGAR_IRMAS, {"id": oferta_id})
-                irmas = cur.rowcount
+                cur.execute(
+                    SQL_PROPAGAR_IRMAS,
+                    {"id": oferta_id, "bonus": BONUS_ANALISE_IA, "teto": TETO_SCORE},
+                )
+                irmas = cur.fetchall()
             conn.commit()
-    if irmas > 0:
-        logger.info("Oferta %s propagou a análise para %s irmãs.", oferta_id, irmas)
+    for irma in irmas:
+        with get_pool().connection() as conn:
+            qualificar_pagina(conn, irma["id"], irma.get("url_destino"))
+    if irmas:
+        logger.info("Oferta %s propagou o criativo para %s irmãs.", oferta_id, len(irmas))
     return persisted
 
 

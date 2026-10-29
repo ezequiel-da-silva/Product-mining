@@ -92,6 +92,7 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
     }
     embedding_mock = [0.15, -0.02, 0.88]
     mock_cursor.rowcount = 1
+    mock_cursor.fetchall.return_value = []
 
     # Executa a função
     persisted = persistir_resultado_ia(
@@ -115,6 +116,8 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
     assert parametros_sql["embedding"] == "[0.15,-0.02,0.88]"
     assert parametros_sql["embedding_texto_hash"] == _hash_texto_embedding(_texto_embedding(dados_mock))
     assert parametros_sql["token"] == "token-1"
+    assert parametros_sql["bonus"] == 25
+    assert parametros_sql["teto"] == 100
     assert "processamento_token = %(token)s" in args_chamada[0]
 
 

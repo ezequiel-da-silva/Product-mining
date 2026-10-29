@@ -37,15 +37,16 @@ CREATE TABLE IF NOT EXISTS ofertas (
 
     anuncios_ativos_pagina INTEGER DEFAULT 0,
     score SMALLINT DEFAULT 0,
+    dados_comerciais_ausentes BOOLEAN NOT NULL DEFAULT FALSE,
     status_qualificacao VARCHAR(30) DEFAULT 'pendente' NOT NULL,
     processamento_iniciado_em TIMESTAMPTZ,
     processamento_token UUID,
     falhas_ia SMALLINT NOT NULL DEFAULT 0,
     falhas_ia_em TIMESTAMPTZ,
     CONSTRAINT ofertas_status_qualificacao_check
-        CHECK (status_qualificacao IN ('pendente', 'processando_ia', 'concluido')),
+        CHECK (status_qualificacao IN ('pendente', 'pendente_lp', 'processando_ia', 'concluido')),
     CONSTRAINT ofertas_score_check
-        CHECK (score BETWEEN 0 AND 120),
+        CHECK (score BETWEEN 0 AND 100),
     CONSTRAINT ofertas_margem_estimada_pct_check
         CHECK (margem_estimada_pct IS NULL OR margem_estimada_pct BETWEEN 0 AND 100),
     CONSTRAINT ofertas_preco_oferta_estimado_check
@@ -70,6 +71,14 @@ CREATE INDEX IF NOT EXISTS idx_ofertas_concluidas_captura
 -- Índice HNSW calibrado para busca vetorial de alta precisão
 CREATE INDEX IF NOT EXISTS idx_ofertas_embedding ON ofertas USING hnsw (embedding_analise vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
+CREATE TABLE IF NOT EXISTS triagem_oferta (
+    oferta_id BIGINT PRIMARY KEY REFERENCES ofertas (id) ON DELETE CASCADE,
+    estado VARCHAR(20) NOT NULL,
+    atualizado_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT triagem_oferta_estado_check
+        CHECK (estado IN ('estrelada', 'descartada', 'testando'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_ofertas_embedding_texto_hash
     ON ofertas (embedding_texto_hash)
     WHERE embedding_analise IS NOT NULL;
@@ -81,7 +90,7 @@ DO $$
 BEGIN
     ALTER TABLE ofertas
         ADD CONSTRAINT ofertas_status_qualificacao_check
-        CHECK (status_qualificacao IN ('pendente', 'processando_ia', 'concluido'));
+        CHECK (status_qualificacao IN ('pendente', 'pendente_lp', 'processando_ia', 'concluido'));
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
@@ -90,7 +99,7 @@ DO $$
 BEGIN
     ALTER TABLE ofertas
         ADD CONSTRAINT ofertas_score_check
-        CHECK (score BETWEEN 0 AND 120);
+        CHECK (score BETWEEN 0 AND 100);
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
@@ -128,5 +137,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('007_falhas_ia'),
     ('008_falhas_ia_em'),
     ('009_revogar_delete_pipeline'),
-    ('010_tokens_ia')
+    ('010_tokens_ia'),
+    ('011_criativo_lp_score')
 ON CONFLICT (versao) DO NOTHING;
