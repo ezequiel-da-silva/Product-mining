@@ -32,6 +32,8 @@ FILTRO_TODOS = "Todos"
 FILTRO_NOTA = "Nota de 75 ou mais"
 NOTA_MINIMA = NOTA_MINIMA_PAINEL
 BOTAO_DETALHES = "Ver detalhes"
+ESTIMATIVA_SOURCING = "Estimativa Sourcing (China)"
+LEGENDA_MARGEM = "Markup padrão de sourcing na China. Não é conciliação fiscal."
 LARGURA_VIDEO = 420
 ALTURA_VIDEO = 280
 GANCHO_LIMITE = 160
@@ -325,6 +327,19 @@ def rotulo_margem(valor: object) -> str:
     return f"Margem {faixa}: {numero}%"
 
 
+def _mostrar_margem(valor: object) -> None:
+    st.caption(rotulo_margem(valor))
+    st.badge(ESTIMATIVA_SOURCING, color="gray", help=LEGENDA_MARGEM)
+    st.caption(LEGENDA_MARGEM)
+
+
+def rotulo_acessivel_detalhes(oferta: dict) -> str:
+    nicho = str(oferta.get("nicho") or "").strip() or "sem nicho"
+    identificador = oferta.get("id")
+    numero = identificador if identificador is not None else "s/n"
+    return f"{BOTAO_DETALHES} da oferta {nicho} #{numero}"
+
+
 def checkout_detectado(url: object) -> str | None:
     if not isinstance(url, str):
         return None
@@ -462,6 +477,8 @@ def _dialogo_oferta(oferta: dict) -> None:
             "</style>"
         )
         st.video(video, width=LARGURA_VIDEO)
+    with st.expander("Transcrição do Criativo"):
+        st.write(oferta.get("transcricao_video") or "—")
 
     gatilho, margem, preco = st.columns(3)
     with gatilho:
@@ -471,21 +488,15 @@ def _dialogo_oferta(oferta: dict) -> None:
     with margem:
         with st.container(border=True):
             st.caption(ROTULOS_OFERTAS["margem_estimada_pct"])
-            st.write(rotulo_margem(oferta.get("margem_estimada_pct")))
+            _mostrar_margem(oferta.get("margem_estimada_pct"))
     with preco:
         with st.container(border=True):
             st.caption(ROTULOS_OFERTAS["preco_oferta_estimado"])
             st.write(texto_comercial(oferta))
 
-    gancho, transcricao = st.columns(2, vertical_alignment="top")
-    with gancho:
-        with st.container(border=True, height="stretch"):
-            st.markdown(f"**{ROTULOS_OFERTAS['gancho_3s']}**")
-            st.write(oferta.get("gancho_3s") or "—")
-    with transcricao:
-        with st.container(border=True, height="stretch"):
-            st.markdown(f"**{ROTULOS_OFERTAS['transcricao_video']}**")
-            st.write(oferta.get("transcricao_video") or "—")
+    with st.container(border=True):
+        st.markdown(f"**{ROTULOS_OFERTAS['gancho_3s']}**")
+        st.write(oferta.get("gancho_3s") or "—")
 
     with st.container(border=True):
         st.markdown(f"**{ROTULOS_OFERTAS['copy_texto']}**")
@@ -602,7 +613,7 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
                     oferta_id = oferta.get("id")
                     st.markdown(f"**{nicho}**")
                     st.caption(texto_comercial(oferta))
-                    st.caption(rotulo_margem(oferta.get("margem_estimada_pct")))
+                    _mostrar_margem(oferta.get("margem_estimada_pct"))
                     checkout = checkout_detectado(oferta.get("url_destino"))
                     if checkout:
                         st.caption(f"Checkout: {checkout}")
@@ -620,7 +631,7 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
                     url = _url_http(oferta.get("url_destino"))
                     if url:
                         _link_loja(url)
-                    if st.button(f"{BOTAO_DETALHES} de {nicho}", key=f"detalhe-{oferta_id}", width="stretch"):
+                    if st.button(rotulo_acessivel_detalhes(oferta), key=f"detalhe-{oferta_id}", width="stretch"):
                         escolhida = {"tipo": "detalhe", "oferta": oferta}
                     salvar, descartar, testar = st.columns(3)
                     with salvar:
