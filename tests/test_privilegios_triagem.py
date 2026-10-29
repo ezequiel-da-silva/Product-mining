@@ -16,3 +16,10 @@ def test_painel_recebe_dml_na_triagem_e_na_sequence_se_existir():
     assert "to_regclass('public.triagem_oferta_id_seq')" in migracao
     assert "idx_ofertas_nicho" in migracao
     assert "sub_nicho" in migracao
+
+
+def test_security_md_publica_o_canal_de_reporte():
+    texto = (RAIZ / "SECURITY.md").read_text(encoding="utf-8")
+    assert "ezekisilva544@gmail.com" in texto
+    assert "mailto:ezekisilva544@gmail.com" in texto
+    assert "seu-email@dominio.com" not in texto

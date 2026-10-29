@@ -4,7 +4,9 @@ import logging
 import math
 import os
 import secrets
+import time
 from decimal import ROUND_HALF_UP, Decimal
+from urllib.parse import urlsplit
 
 import psycopg
 import streamlit as st
@@ -36,6 +38,8 @@ GANCHO_LIMITE = 160
 MODELO_EMBEDDING = "gemini-embedding-2"
 DIMENSAO_EMBEDDING = 768
 PAGE_SIZE = 10
+LIMITE_EMBEDDING_POR_MINUTO = 12
+JANELA_EMBEDDING_SEGUNDOS = 60.0
 COLUNAS_OFERTA = """
     id, nicho, sub_nicho, gancho_3s, gatilho_mental, url_destino, copy_texto,
     transcricao_video, url_video_r2, objecoes_quebradas, angulos_alternativos,
@@ -344,12 +348,36 @@ def texto_comercial(oferta: dict) -> str:
     return texto_preco(oferta.get("preco_oferta_estimado"))
 
 
+def aviso_destino_inseguro(url: str) -> str | None:
+    partes = urlsplit(url.strip())
+    if partes.scheme.lower() != "http":
+        return None
+    host = partes.hostname or "domínio externo"
+    return f"O destino {host} trafega por HTTP, sem criptografia, e pertence a um domínio externo."
+
+
 def _link_loja(url: str) -> None:
     seguro = html.escape(url, quote=True)
+    aviso = aviso_destino_inseguro(url)
+    titulo = html.escape(aviso, quote=True) if aviso else "Abrir a loja em uma nova aba"
     st.markdown(
-        f'<a href="{seguro}" target="_blank" rel="noopener noreferrer">Abrir loja</a>',
+        f'<a href="{seguro}" target="_blank" rel="noopener noreferrer" title="{titulo}">Abrir loja</a>',
         unsafe_allow_html=True,
     )
+    if aviso:
+        st.caption(aviso)
+
+
+def _avaliar_cota_embedding(
+    historico: list[float],
+    agora: float,
+    limite: int = LIMITE_EMBEDDING_POR_MINUTO,
+    janela: float = JANELA_EMBEDDING_SEGUNDOS,
+) -> tuple[bool, list[float]]:
+    recentes = [marca for marca in historico if agora - marca < janela]
+    if len(recentes) >= limite:
+        return False, recentes
+    return True, [*recentes, agora]
 
 
 def similaridade_percentual(distancia: object) -> float:
@@ -500,15 +528,29 @@ def _opcoes_filtro(nichos: list[str]) -> list[str]:
     return [FILTRO_TODOS, *nomes, FILTRO_NOTA]
 
 
-def _aplicar_busca(frase: str) -> None:
+def _aplicar_busca(frase: str, agora: float | None = None) -> None:
     normalizada = _normalizar_frase_busca(frase)
     nicho = nicho_canonico(normalizada)
     if nicho:
         st.session_state["filtro_ofertas"] = nicho
+        st.session_state["busca_limitada"] = False
         _reiniciar_listagem()
         return
-    vetor = gerar_embedding_busca(normalizada) if normalizada else None
-    _reiniciar_listagem(normalizada, vetor)
+    if not normalizada:
+        st.session_state["busca_limitada"] = False
+        _reiniciar_listagem()
+        return
+    instante = time.monotonic() if agora is None else agora
+    permitido, historico = _avaliar_cota_embedding(
+        list(st.session_state.get("embedding_buscas_em", [])),
+        instante,
+    )
+    st.session_state["embedding_buscas_em"] = historico
+    if not permitido:
+        st.session_state["busca_limitada"] = True
+        return
+    st.session_state["busca_limitada"] = False
+    _reiniciar_listagem(normalizada, gerar_embedding_busca(normalizada))
 
 
 def _sincronizar_filtro(opcoes: list[str]) -> str:
@@ -683,6 +725,11 @@ def _painel_ofertas(conn) -> None:
 
     if buscar:
         _aplicar_busca(frase)
+    if st.session_state.get("busca_limitada"):
+        st.warning(
+            f"Limite de {LIMITE_EMBEDDING_POR_MINUTO} buscas com embedding por minuto. "
+            "Aguarde a janela liberar antes de tentar de novo."
+        )
 
     opcoes = _opcoes_filtro(listar_nichos_concluidos(conn))
     filtro = _sincronizar_filtro(opcoes)

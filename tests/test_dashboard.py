@@ -19,6 +19,7 @@ from src.dashboard import (
     GANCHO_LIMITE,
     LARGURA_VIDEO,
     LEGENDA_BUSCA,
+    LIMITE_EMBEDDING_POR_MINUTO,
     NICHOS_CONCLUIDOS_SQL,
     NOTA_MINIMA,
     OFERTAS_BUSCA_CURSOR_SQL,
@@ -32,8 +33,10 @@ from src.dashboard import (
     TITULO_OFERTAS_RECENTES,
     TITULO_PAINEL,
     _aplicar_busca,
+    _avaliar_cota_embedding,
     _descartar_credencial_na_url,
     _dialogo_oferta,
+    _link_loja,
     _mostrar_cards,
     _normalizar_frase_busca,
     _opcoes_filtro,
@@ -41,6 +44,7 @@ from src.dashboard import (
     _sincronizar_filtro,
     _vetor_embedding,
     _zerar_paginacao,
+    aviso_destino_inseguro,
     checkout_detectado,
     consultar_ofertas_por_similaridade,
     consultar_ofertas_recentes,
@@ -106,6 +110,76 @@ def _conexao_com_linhas(linhas):
     conexao = MagicMock()
     conexao.cursor.return_value.__enter__.return_value = cursor
     return conexao, cursor
+
+
+def test_http_avisa_dominio_externo_sem_criptografia():
+    aviso = aviso_destino_inseguro("http://loja.example/produto")
+    assert aviso is not None
+    assert "loja.example" in aviso
+    assert "sem criptografia" in aviso
+    assert "domínio externo" in aviso
+    assert aviso_destino_inseguro("https://loja.example/produto") is None
+    assert aviso_destino_inseguro("HTTP://Loja.Example/item") is not None
+    fonte = inspect.getsource(_link_loja)
+    assert "aviso_destino_inseguro" in fonte
+    assert "noopener noreferrer" in fonte
+    assert "st.caption" in fonte
+
+
+def test_cota_de_embedding_usa_janela_deslizante():
+    historico = [float(indice) for indice in range(LIMITE_EMBEDDING_POR_MINUTO)]
+
+    permitido, atual = _avaliar_cota_embedding(historico, agora=11.5)
+
+    assert permitido is False
+    assert atual == historico
+
+    permitido, atual = _avaliar_cota_embedding(historico, agora=60.0)
+
+    assert permitido is True
+    assert atual[0] == 1.0
+    assert atual[-1] == 60.0
+    assert len(atual) == LIMITE_EMBEDDING_POR_MINUTO
+
+
+def test_busca_bloqueada_nao_gera_embedding(monkeypatch):
+    import src.dashboard as dashboard
+
+    estado = {
+        "embedding_buscas_em": [0.0] * LIMITE_EMBEDDING_POR_MINUTO,
+        "ofertas_modo": "recentes",
+        "ofertas_frase": "anterior",
+        "ofertas_vetor": None,
+    }
+    monkeypatch.setattr(dashboard.st, "session_state", estado)
+    embedding = MagicMock()
+    monkeypatch.setattr(dashboard, "gerar_embedding_busca", embedding)
+
+    _aplicar_busca("produto para dormir melhor", agora=10.0)
+
+    embedding.assert_not_called()
+    assert estado["busca_limitada"] is True
+    assert estado["ofertas_frase"] == "anterior"
+    assert estado["ofertas_modo"] == "recentes"
+    assert len(estado["embedding_buscas_em"]) == LIMITE_EMBEDDING_POR_MINUTO
+
+
+def test_nicho_canonico_nao_consome_cota_de_embedding(monkeypatch):
+    import src.dashboard as dashboard
+
+    historico = [0.0] * LIMITE_EMBEDDING_POR_MINUTO
+    estado = {"embedding_buscas_em": list(historico)}
+    monkeypatch.setattr(dashboard.st, "session_state", estado)
+    embedding = MagicMock()
+    monkeypatch.setattr(dashboard, "gerar_embedding_busca", embedding)
+
+    _aplicar_busca("Pet", agora=10.0)
+
+    embedding.assert_not_called()
+    assert estado["filtro_ofertas"] == "Pet"
+    assert estado["embedding_buscas_em"] == historico
+    assert estado["busca_limitada"] is False
+    assert estado["ofertas_modo"] == "recentes"
 
 
 def test_rotulo_de_outros_inclui_sub_nicho():
