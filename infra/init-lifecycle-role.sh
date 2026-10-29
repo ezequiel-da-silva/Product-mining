@@ -32,5 +32,5 @@ $$;
 GRANT CONNECT ON DATABASE :"dbname" TO lifecycle_writer;
 GRANT USAGE ON SCHEMA public TO lifecycle_writer;
 GRANT SELECT, DELETE ON TABLE ofertas TO lifecycle_writer;
-GRANT UPDATE (processamento_token) ON TABLE ofertas TO lifecycle_writer;
+GRANT UPDATE (processamento_token, score, fadiga_dias) ON TABLE ofertas TO lifecycle_writer;
 SQL

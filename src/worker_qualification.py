@@ -21,7 +21,13 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from core.celery_app import app  # noqa: E402
-from core.pontuacao import BONUS_ANALISE_IA, DESPACHO_IMEDIATO, TETO_HEURISTICO, TETO_SCORE  # noqa: E402
+from core.pontuacao import (  # noqa: E402
+    BONUS_ANALISE_IA,
+    DESPACHO_IMEDIATO,
+    PONTOS_FADIGA_POR_DIA,
+    TETO_HEURISTICO,
+    TETO_SCORE,
+)
 from core.secrets import ler_segredo  # noqa: E402
 from src.comercial import qualificar_pagina  # noqa: E402
 from src.midia_r2 import referencia_armazenada  # noqa: E402
@@ -146,52 +152,17 @@ def _extrair_payload(payload: dict) -> dict:
     }
 
 
-def _data_inicio(value: object) -> datetime | None:
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-
-    if isinstance(value, (int, float)):
-        timestamp = float(value)
-        if timestamp > 10_000_000_000:
-            timestamp /= 1000
-        try:
-            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-
-    if not isinstance(value, str) or not value.strip():
-        return None
-
-    text = value.strip()
-    if text.isdigit():
-        return _data_inicio(int(text))
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
 def _url_ecommerce(url: str) -> bool:
     normalized = url.lower()
     return any(marker in normalized for marker in ECOMMERCE_MARKERS)
 
 
-def _calcular_score(campos: dict, now: datetime | None = None) -> int:
+def _calcular_score(campos: dict) -> int:
     score = 0
     if campos.get("video_url"):
         score += 15
     if _normalizar_cta(campos.get("tipo_cta")) in COMMERCIAL_CTAS:
         score += 15
-
-    start_time = _data_inicio(campos.get("ad_delivery_start_time"))
-    current_time = now or datetime.now(timezone.utc)
-    if start_time and (current_time - start_time).total_seconds() > 5 * 24 * 60 * 60:
-        score += 20
 
     destination = campos.get("url_destino")
     if isinstance(destination, str) and _url_ecommerce(destination):
@@ -470,7 +441,11 @@ def _persistir_oferta(
                     copy_texto = COALESCE(NULLIF(EXCLUDED.copy_texto, ''), ofertas.copy_texto),
                     tipo_cta = COALESCE(EXCLUDED.tipo_cta, ofertas.tipo_cta),
                     url_video_r2 = COALESCE(EXCLUDED.url_video_r2, ofertas.url_video_r2),
-                    score = GREATEST(ofertas.score, EXCLUDED.score),
+                    score = GREATEST(
+                        LEAST(ofertas.score + ofertas.fadiga_dias * %(pontos_fadiga)s, %(teto_score)s),
+                        EXCLUDED.score
+                    ),
+                    fadiga_dias = 0,
                     phash_criativo = COALESCE(EXCLUDED.phash_criativo, ofertas.phash_criativo),
                     phash_perceptual = COALESCE(EXCLUDED.phash_perceptual, ofertas.phash_perceptual)
                 RETURNING id, score, status_qualificacao, phash_criativo, phash_perceptual,
@@ -485,6 +460,8 @@ def _persistir_oferta(
                     "score": score,
                     "phash_criativo": phash_criativo,
                     "phash_perceptual": phash_perceptual,
+                    "pontos_fadiga": PONTOS_FADIGA_POR_DIA,
+                    "teto_score": TETO_SCORE,
                 },
             )
             oferta = cur.fetchone()

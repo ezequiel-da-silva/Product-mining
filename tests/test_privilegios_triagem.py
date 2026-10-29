@@ -61,6 +61,13 @@ def test_pipeline_atualiza_por_coluna_e_painel_le_tabela_a_tabela():
     assert "ADD COLUMN IF NOT EXISTS phash_perceptual BIT(64)" in perceptual
     assert "GRANT UPDATE (phash_perceptual)" in perceptual
     assert "pg_roles" in perceptual
+    assert "fadiga_dias" in _bloco_update(pipeline)
+    ciclo = (RAIZ / "infra/init-lifecycle-role.sh").read_text(encoding="utf-8")
+    assert "GRANT UPDATE (processamento_token, score, fadiga_dias)" in ciclo
+    fadiga = (RAIZ / "infra/migrations/016_fadiga_anuncio.sql").read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS fadiga_dias" in fadiga
+    assert "GRANT UPDATE (processamento_token, score, fadiga_dias)" in fadiga
+    assert "pg_roles" in fadiga
 
 
 def test_security_md_publica_o_canal_de_reporte():

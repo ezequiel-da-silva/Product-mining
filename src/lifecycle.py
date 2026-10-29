@@ -16,6 +16,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from core.celery_app import app  # noqa: E402
+from core.pontuacao import DIAS_SEM_AVISTAMENTO, PONTOS_FADIGA_POR_DIA  # noqa: E402
 from core.secrets import ler_segredo  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -29,6 +30,25 @@ _CHAVES_R2 = (
     "CLOUDFLARE_R2_SECRET_KEY",
     "CLOUDFLARE_R2_BUCKET",
 )
+
+SQL_APLICAR_FADIGA = """
+UPDATE ofertas AS alvo
+SET score = alvo.score - aplicado.dias * %(pontos)s,
+    fadiga_dias = alvo.fadiga_dias + aplicado.dias
+FROM (
+    SELECT id,
+           LEAST(
+               GREATEST(
+                   0,
+                   FLOOR(EXTRACT(EPOCH FROM (NOW() - data_ultima_captura)) / 86400)::int - %(dias)s
+               ) - fadiga_dias,
+               score / %(pontos)s
+           )::int AS dias
+    FROM ofertas
+) AS aplicado
+WHERE alvo.id = aplicado.id
+  AND aplicado.dias > 0
+"""
 
 OFERTAS_FRACAS_SQL = """
 SELECT id, url_video_r2
@@ -93,6 +113,17 @@ def _chave_objeto_r2(url: str) -> str | None:
     if not encontrada:
         return None
     return encontrada.group(1)
+
+
+def _aplicar_fadiga() -> None:
+    """Desconta 5 pontos por dia completo além de 14 sem avistamento novo, sem reaplicar."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                SQL_APLICAR_FADIGA,
+                {"dias": DIAS_SEM_AVISTAMENTO, "pontos": PONTOS_FADIGA_POR_DIA},
+            )
+        conn.commit()
 
 
 def _ofertas_fracas() -> list[dict]:
@@ -185,8 +216,18 @@ def _expirar_uma(oferta: dict, cliente) -> bool:
 
 @app.task(name="tasks.lifecycle.expirar_ofertas_fracas")
 def expirar_ofertas_fracas() -> dict:
-    """Remove ofertas fracas antigas e o vídeo exclusivo correspondente no R2."""
-    ofertas = _ofertas_fracas()
-    cliente = _criar_cliente_r2() if any(item.get("url_video_r2") for item in ofertas) else None
-    removidas = sum(_expirar_uma(oferta, cliente) for oferta in ofertas)
+    """Aplica a fadiga e esvazia o critério de limpeza, em lotes, sem parar na primeira centena."""
+    _aplicar_fadiga()
+    cliente = None
+    removidas = 0
+    while True:
+        ofertas = _ofertas_fracas()
+        if not ofertas:
+            break
+        if cliente is None and any(item.get("url_video_r2") for item in ofertas):
+            cliente = _criar_cliente_r2()
+        neste_lote = sum(_expirar_uma(oferta, cliente) for oferta in ofertas)
+        removidas += neste_lote
+        if neste_lote == 0:
+            break
     return {"status": "expired", "removidas": removidas}

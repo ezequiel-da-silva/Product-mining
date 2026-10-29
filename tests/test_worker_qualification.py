@@ -51,28 +51,17 @@ def test_extrair_payload_mapeia_snapshot_e_video():
     assert campos["video_url"] == "https://video.fbcdn.net/ad.mp4"
 
 
-def test_calcular_score_soma_regras_de_negocio():
-    now = datetime(2026, 10, 20, tzinfo=timezone.utc)
+def test_calcular_score_ignora_a_idade_do_anuncio():
     campos = {
         "video_url": "https://video.fbcdn.net/ad.mp4",
         "tipo_cta": "COMPRAR_AGORA",
-        "ad_delivery_start_time": now - timedelta(days=6),
+        "ad_delivery_start_time": datetime(2020, 1, 1, tzinfo=timezone.utc),
         "url_destino": "https://loja.myshopify.com/checkout",
     }
+    recente = {**campos, "ad_delivery_start_time": datetime(2026, 10, 29, tzinfo=timezone.utc)}
 
-    assert _calcular_score(campos, now=now) == 75
-
-
-def test_calcular_score_nao_dá_pontos_de_longevidade_no_limite_de_cinco_dias():
-    now = datetime(2026, 10, 20, tzinfo=timezone.utc)
-    campos = {
-        "video_url": "https://video.fbcdn.net/ad.mp4",
-        "tipo_cta": "LEARN_MORE",
-        "ad_delivery_start_time": now - timedelta(days=5),
-        "url_destino": "https://loja.example/checkout",
-    }
-
-    assert _calcular_score(campos, now=now) == 55
+    assert _calcular_score(campos) == 55
+    assert _calcular_score(recente) == 55
 
 
 def test_host_video_exige_https_e_cdn_meta():
@@ -191,6 +180,10 @@ def test_persistencia_usa_upsert_e_incrementa_avistamentos(monkeypatch):
     assert "vezes_avistado = ofertas.vezes_avistado + 1" in query
     assert "COALESCE(EXCLUDED.phash_criativo, ofertas.phash_criativo)" in query
     assert "COALESCE(EXCLUDED.phash_perceptual, ofertas.phash_perceptual)" in query
+    assert "ofertas.fadiga_dias * %(pontos_fadiga)s" in query
+    assert "fadiga_dias = 0" in query
+    assert parameters["pontos_fadiga"] == 5
+    assert parameters["teto_score"] == 100
     assert parameters["score"] == 55
     assert parameters["url_video_r2"] == "https://cdn.example/videos/ad-1.mp4"
     assert parameters["phash_criativo"] == "ab" * 32

@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS ofertas (
 
     anuncios_ativos_pagina INTEGER DEFAULT 0,
     score SMALLINT DEFAULT 0,
+    fadiga_dias SMALLINT NOT NULL DEFAULT 0,
     dados_comerciais_ausentes BOOLEAN NOT NULL DEFAULT FALSE,
     status_qualificacao VARCHAR(30) DEFAULT 'pendente' NOT NULL,
     processamento_iniciado_em TIMESTAMPTZ,
@@ -55,7 +56,9 @@ CREATE TABLE IF NOT EXISTS ofertas (
     CONSTRAINT ofertas_preco_oferta_estimado_check
         CHECK (preco_oferta_estimado IS NULL OR preco_oferta_estimado >= 0),
     CONSTRAINT ofertas_preco_moeda_check
-        CHECK (preco_moeda IS NULL OR preco_moeda IN ('BRL', 'USD'))
+        CHECK (preco_moeda IS NULL OR preco_moeda IN ('BRL', 'USD')),
+    CONSTRAINT ofertas_fadiga_dias_check
+        CHECK (fadiga_dias >= 0)
 );
 
 ALTER TABLE ofertas
@@ -134,11 +137,23 @@ ALTER TABLE ofertas
 ALTER TABLE ofertas
     ADD COLUMN IF NOT EXISTS phash_perceptual BIT(64);
 
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS fadiga_dias SMALLINT NOT NULL DEFAULT 0;
+
 DO $$
 BEGIN
     ALTER TABLE ofertas
         ADD CONSTRAINT ofertas_preco_moeda_check
         CHECK (preco_moeda IS NULL OR preco_moeda IN ('BRL', 'USD'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+    ALTER TABLE ofertas
+        ADD CONSTRAINT ofertas_fadiga_dias_check
+        CHECK (fadiga_dias >= 0);
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
@@ -163,5 +178,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('012_nicho_canonico'),
     ('013_privilegios_estreitos'),
     ('014_preco_moeda'),
-    ('015_phash_perceptual')
+    ('015_phash_perceptual'),
+    ('016_fadiga_anuncio')
 ON CONFLICT (versao) DO NOTHING;

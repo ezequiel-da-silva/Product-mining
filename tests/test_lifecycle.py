@@ -10,9 +10,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.lifecycle import (  # noqa: E402
     OFERTA_ELEGIVEL_TRAVADA_SQL,
     OFERTAS_FRACAS_SQL,
+    SQL_APLICAR_FADIGA,
     _apagar_objeto,
+    _aplicar_fadiga,
     _chave_objeto_r2,
     _expirar_uma,
+    expirar_ofertas_fracas,
 )
 
 
@@ -111,6 +114,41 @@ def test_migracao_003_higieniza_antes_das_constraints():
     assert posicao_status < posicao_score < posicao_margem < posicao_preco < posicao_constraint
     assert "margem_estimada_pct IS NOT NULL" in sql
     assert "preco_oferta_estimado < 0" in sql
+
+
+def test_fadiga_desconta_so_os_dias_novos(monkeypatch):
+    cursor = MagicMock()
+    conexao = _pool_com_cursor(monkeypatch, cursor)
+
+    _aplicar_fadiga()
+
+    consulta, params = cursor.execute.call_args.args
+    texto = " ".join(consulta.split())
+    assert consulta == SQL_APLICAR_FADIGA
+    assert params == {"dias": 14, "pontos": 5}
+    assert "fadiga_dias" in texto
+    assert "86400" in texto
+    assert "aplicado.dias > 0" in texto
+    conexao.commit.assert_called_once()
+
+
+def test_expiracao_esvazia_o_criterio_e_para_sem_progresso(monkeypatch):
+    import src.lifecycle as lifecycle
+
+    lotes = [[{"id": 1}, {"id": 2}], [{"id": 3, "url_video_r2": "https://cdn/videos/a.mp4"}], []]
+    monkeypatch.setattr(lifecycle, "_aplicar_fadiga", MagicMock())
+    monkeypatch.setattr(lifecycle, "_ofertas_fracas", lambda: lotes.pop(0) if lotes else [{"id": 9}])
+    monkeypatch.setattr(lifecycle, "_expirar_uma", lambda *_args: True)
+    cliente = MagicMock()
+    monkeypatch.setattr(lifecycle, "_criar_cliente_r2", lambda: cliente)
+
+    assert expirar_ofertas_fracas() == {"status": "expired", "removidas": 3}
+
+    travados = [{"id": 4}]
+    monkeypatch.setattr(lifecycle, "_ofertas_fracas", lambda: travados)
+    monkeypatch.setattr(lifecycle, "_expirar_uma", lambda *_args: False)
+
+    assert expirar_ofertas_fracas() == {"status": "expired", "removidas": 0}
 
 
 def test_expiracao_diaria_usa_a_fila_lifecycle():

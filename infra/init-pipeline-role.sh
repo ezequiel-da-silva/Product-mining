@@ -44,6 +44,7 @@ GRANT UPDATE (
     tipo_cta,
     url_video_r2,
     score,
+    fadiga_dias,
     phash_criativo,
     phash_perceptual,
     transcricao_video,
