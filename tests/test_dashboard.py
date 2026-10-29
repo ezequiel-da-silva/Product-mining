@@ -307,6 +307,7 @@ def test_consultas_trazem_gancho_link_e_detalhe():
             "url_video_r2",
             "objecoes_quebradas",
             "angulos_alternativos",
+            "preco_moeda",
         ):
             assert coluna in consulta
             assert coluna in COLUNAS_OFERTA
@@ -326,10 +327,12 @@ def test_credencial_nao_permanece_na_url(monkeypatch):
 def test_nota_margem_e_checkout_sao_explicitos():
     assert texto_nota(80) == "80/100"
     assert texto_nota(None) == "—"
-    assert rotulo_margem(70) == "Margem alta: 70%"
-    assert rotulo_margem(45) == "Margem média: 45%"
-    assert rotulo_margem(10) == "Margem baixa: 10%"
-    assert rotulo_margem(None) == "Margem não identificada"
+    assert rotulo_margem(70, "BRL") == "Margem alta: 70%"
+    assert rotulo_margem(45, "BRL") == "Margem média: 45%"
+    assert rotulo_margem(10, "BRL") == "Margem baixa: 10%"
+    assert rotulo_margem(None, "BRL") == "Margem não identificada"
+    assert rotulo_margem(70, "USD") == "Margem não comparável"
+    assert rotulo_margem(70) == "Margem não comparável"
     assert ESTIMATIVA_SOURCING == "Estimativa Sourcing (China)"
     assert "conciliação fiscal" in LEGENDA_MARGEM
     assert rotulo_acessivel_detalhes({"nicho": "Pet", "id": 7}) == "Ver detalhes da oferta Pet #7"
@@ -339,7 +342,9 @@ def test_nota_margem_e_checkout_sao_explicitos():
     assert checkout_detectado("https://loja.myshopify.com/products/x") == "Shopify"
     assert checkout_detectado("https://exemplo.com") is None
     assert texto_comercial({"dados_comerciais_ausentes": True}) == "Dados comerciais ausentes"
-    assert texto_comercial({"preco_oferta_estimado": 10}) == "R$ 10,00"
+    assert texto_comercial({"preco_oferta_estimado": 10, "preco_moeda": "BRL"}) == "R$ 10,00"
+    assert texto_comercial({"preco_oferta_estimado": 1299.9, "preco_moeda": "USD"}) == "US$ 1,299.90"
+    assert texto_comercial({"preco_oferta_estimado": 49.90}) == "Moeda não identificada"
 
 
 def test_similaridade_e_reset_da_paginacao(monkeypatch):

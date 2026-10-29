@@ -208,6 +208,11 @@ def persistir_resultado_ia(
     """Grava o enriquecimento somente se esta execução ainda possui a reserva."""
     embedding_str = f"[{','.join(map(str, embedding))}]"
     uso_tokens = uso_tokens or {}
+    moeda = dados.get("preco_moeda")
+    preco = dados.get("preco_oferta_estimado")
+    if moeda not in {"BRL", "USD"}:
+        preco = None
+        moeda = None
 
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -220,6 +225,7 @@ def persistir_resultado_ia(
                     sub_nicho = %(sub_nicho)s,
                     gatilho_mental = %(gatilho)s,
                     preco_oferta_estimado = %(preco)s,
+                    preco_moeda = %(moeda)s,
                     margem_estimada_pct = %(margem)s,
                     objecoes_quebradas = %(objecoes)s::jsonb,
                     angulos_alternativos = %(angulos)s::jsonb,
@@ -244,7 +250,8 @@ def persistir_resultado_ia(
                     "nicho": dados["nicho"],
                     "sub_nicho": dados.get("sub_nicho"),
                     "gatilho": dados["gatilho_mental"],
-                    "preco": dados.get("preco_oferta_estimado"),
+                    "preco": preco,
+                    "moeda": moeda,
                     "margem": dados.get("margem_estimada_pct"),
                     "objecoes": json.dumps(dados.get("objecoes_quebradas", [])),
                     "angulos": json.dumps(dados.get("angulos_alternativos", [])),

@@ -51,6 +51,11 @@ def test_pipeline_atualiza_por_coluna_e_painel_le_tabela_a_tabela():
     assert "GRANT SELECT ON TABLES TO streamlit_readonly" not in painel
     assert "GRANT SELECT ON TABLE ofertas TO streamlit_readonly" in painel
     assert "GRANT SELECT ON TABLE ofertas TO streamlit_readonly" in migracao
+    assert "preco_moeda" in _bloco_update(pipeline)
+    moeda = (RAIZ / "infra/migrations/014_preco_moeda.sql").read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS preco_moeda" in moeda
+    assert "GRANT UPDATE (preco_moeda)" in moeda
+    assert "pg_roles" in moeda
 
 
 def test_security_md_publica_o_canal_de_reporte():

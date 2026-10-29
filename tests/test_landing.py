@@ -3,14 +3,38 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 from src.comercial import qualificar_pagina
-from src.landing import buscar_preco, extrair_preco_html, host_publico
+from src.landing import PrecoLido, buscar_preco, extrair_preco_html, host_publico, ler_preco
 
 
-def test_extrai_preco_de_json_ld_e_de_real():
-    html_ld = '<script type="application/ld+json">' '{"@type":"Product","offers":{"price":"49.90"}}' "</script>"
-    assert extrair_preco_html(html_ld) == Decimal("49.90")
-    assert extrair_preco_html("<p>por R$ 1.299,90 à vista</p>") == Decimal("1299.90")
+def test_extrai_preco_so_com_moeda_inequivoca():
+    html_brl = (
+        '<script type="application/ld+json">'
+        '{"@type":"Product","offers":{"price":"49.90","priceCurrency":"BRL"}}'
+        "</script>"
+    )
+    html_usd = (
+        '<script type="application/ld+json">'
+        '{"@type":"Product","offers":{"price":"49.90","priceCurrency":"USD"}}'
+        "</script>"
+    )
+    html_sem_moeda = '<script type="application/ld+json">' '{"@type":"Product","offers":{"price":"49.90"}}' "</script>"
+    assert extrair_preco_html(html_brl) == PrecoLido(Decimal("49.90"), "BRL")
+    assert extrair_preco_html(html_usd) == PrecoLido(Decimal("49.90"), "USD")
+    assert extrair_preco_html(html_sem_moeda) is None
+    assert extrair_preco_html("<p>por R$ 1.299,90 à vista</p>") == PrecoLido(Decimal("1299.90"), "BRL")
+    assert extrair_preco_html("<p>R$ 49,90</p>") == PrecoLido(Decimal("49.90"), "BRL")
+    assert extrair_preco_html("<p>R$ 49.90</p>") == PrecoLido(Decimal("49.90"), "BRL")
+    assert extrair_preco_html("<p>R$ 1.299</p>") is None
+    assert extrair_preco_html("<p>1.299</p>") is None
+    assert extrair_preco_html("<p>US$ 1,299.90</p>") == PrecoLido(Decimal("1299.90"), "USD")
+    assert extrair_preco_html("<p>$ 49.90</p>") == PrecoLido(Decimal("49.90"), "USD")
     assert extrair_preco_html("<p>sem preço</p>") is None
+    euro = '<script type="application/ld+json">{"offers":{"price":"49.90","priceCurrency":"EUR"}}</script>'
+    assert extrair_preco_html(euro) is None
+    assert ler_preco("1.299", "BRL") is None
+    assert ler_preco("1,299.90") == PrecoLido(Decimal("1299.90"), "USD")
+    assert ler_preco("1,299.90", "BRL") is None
+    assert ler_preco("49.90") is None
 
 
 def test_host_privado_e_metadata_sao_recusados(monkeypatch):
@@ -123,6 +147,6 @@ def test_qualificar_pagina_marca_dados_ausentes_quando_nao_ha_preco(monkeypatch)
     assert qualificar_pagina(conexao, 7, "https://loja.example/produto") is True
 
     _consulta, params = cursor.execute.call_args.args
-    assert params == {"preco": None, "ausentes": True, "id": 7}
+    assert params == {"preco": None, "moeda": None, "ausentes": True, "id": 7}
     assert "dados_comerciais_ausentes" in cursor.execute.call_args.args[0]
     assert "pendente_lp" in cursor.execute.call_args.args[0]

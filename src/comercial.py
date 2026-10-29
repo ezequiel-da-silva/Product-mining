@@ -1,7 +1,6 @@
 """Fecha a qualificação comercial da página desta oferta, sem copiar a loja irmã."""
 
 import logging
-from decimal import Decimal
 
 from src.landing import buscar_preco
 
@@ -10,6 +9,7 @@ logger = logging.getLogger(__name__)
 SQL_FECHAR_COMERCIAL = """
 UPDATE ofertas
 SET preco_oferta_estimado = %(preco)s,
+    preco_moeda = %(moeda)s,
     dados_comerciais_ausentes = %(ausentes)s,
     status_qualificacao = 'concluido',
     processamento_iniciado_em = NULL,
@@ -20,14 +20,14 @@ WHERE id = %(id)s
 
 
 def qualificar_pagina(conn, oferta_id: int, url: str | None) -> bool:
-    preco: Decimal | None = None
-    if isinstance(url, str) and url.strip():
-        preco = buscar_preco(url.strip())
-    ausentes = preco is None
+    lido = buscar_preco(url.strip()) if isinstance(url, str) and url.strip() else None
+    preco = lido.valor if lido else None
+    moeda = lido.moeda if lido else None
+    ausentes = lido is None
     with conn.cursor() as cur:
         cur.execute(
             SQL_FECHAR_COMERCIAL,
-            {"preco": preco, "ausentes": ausentes, "id": oferta_id},
+            {"preco": preco, "moeda": moeda, "ausentes": ausentes, "id": oferta_id},
         )
         fechou = cur.rowcount == 1
     conn.commit()

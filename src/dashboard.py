@@ -46,7 +46,7 @@ JANELA_EMBEDDING_SEGUNDOS = 60.0
 COLUNAS_OFERTA = """
     id, nicho, sub_nicho, gancho_3s, gatilho_mental, url_destino, copy_texto,
     transcricao_video, url_video_r2, objecoes_quebradas, angulos_alternativos,
-    preco_oferta_estimado, score, margem_estimada_pct, data_ultima_captura,
+    preco_oferta_estimado, preco_moeda, score, margem_estimada_pct, data_ultima_captura,
     dados_comerciais_ausentes
 """
 ROTULOS_OFERTAS = {
@@ -295,8 +295,23 @@ def formatar_preco_br(valor: object) -> str | None:
     return f"R$ {texto}"
 
 
-def texto_preco(valor: object) -> str:
-    return formatar_preco_br(valor) or PRECO_AUSENTE
+def formatar_preco(valor: object, moeda: str) -> str | None:
+    if valor is None:
+        return None
+    if moeda == "BRL":
+        return formatar_preco_br(valor)
+    if moeda == "USD":
+        quantizado = Decimal(str(valor)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return f"US$ {quantizado:,.2f}"
+    return None
+
+
+def texto_preco(valor: object, moeda: str | None = None) -> str:
+    if moeda in {"BRL", "USD"}:
+        return formatar_preco(valor, moeda) or PRECO_AUSENTE
+    if valor is None:
+        return PRECO_AUSENTE
+    return "Moeda não identificada"
 
 
 def texto_nota(nota: object) -> str:
@@ -315,7 +330,9 @@ def rotulo_nicho(oferta: dict) -> str:
     return nicho
 
 
-def rotulo_margem(valor: object) -> str:
+def rotulo_margem(valor: object, moeda: str | None = None) -> str:
+    if moeda != "BRL":
+        return "Margem não comparável"
     if valor is None:
         return "Margem não identificada"
     numero = int(valor)
@@ -328,8 +345,8 @@ def rotulo_margem(valor: object) -> str:
     return f"Margem {faixa}: {numero}%"
 
 
-def _mostrar_margem(valor: object) -> None:
-    st.caption(rotulo_margem(valor))
+def _mostrar_margem(valor: object, moeda: str | None = None) -> None:
+    st.caption(rotulo_margem(valor, moeda))
     st.badge(ESTIMATIVA_SOURCING, color="gray", help=LEGENDA_MARGEM)
     st.caption(LEGENDA_MARGEM)
 
@@ -369,7 +386,7 @@ def checkout_detectado(url: object) -> str | None:
 def texto_comercial(oferta: dict) -> str:
     if oferta.get("dados_comerciais_ausentes"):
         return "Dados comerciais ausentes"
-    return texto_preco(oferta.get("preco_oferta_estimado"))
+    return texto_preco(oferta.get("preco_oferta_estimado"), oferta.get("preco_moeda"))
 
 
 def aviso_destino_inseguro(url: str) -> str | None:
@@ -498,7 +515,7 @@ def _dialogo_oferta(oferta: dict) -> None:
     with margem:
         with st.container(border=True):
             st.caption(ROTULOS_OFERTAS["margem_estimada_pct"])
-            _mostrar_margem(oferta.get("margem_estimada_pct"))
+            _mostrar_margem(oferta.get("margem_estimada_pct"), oferta.get("preco_moeda"))
     with preco:
         with st.container(border=True):
             st.caption(ROTULOS_OFERTAS["preco_oferta_estimado"])
@@ -629,7 +646,7 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
                     oferta_id = oferta.get("id")
                     st.text(nicho)
                     st.caption(texto_comercial(oferta))
-                    _mostrar_margem(oferta.get("margem_estimada_pct"))
+                    _mostrar_margem(oferta.get("margem_estimada_pct"), oferta.get("preco_moeda"))
                     checkout = checkout_detectado(oferta.get("url_destino"))
                     if checkout:
                         st.caption(f"Checkout: {checkout}")

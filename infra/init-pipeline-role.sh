@@ -51,6 +51,7 @@ GRANT UPDATE (
     sub_nicho,
     gatilho_mental,
     preco_oferta_estimado,
+    preco_moeda,
     margem_estimada_pct,
     objecoes_quebradas,
     angulos_alternativos,

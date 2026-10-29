@@ -16,6 +16,7 @@ def test_analise_schema_sucesso():
         "gatilho_mental": "Urgência",
         "objecoes_quebradas": ["É caro", "Demora"],
         "preco_oferta_estimado": 199.90,
+        "preco_moeda": "brl",
         "margem_estimada_pct": 50,
         "angulos_alternativos": [
             {
@@ -29,6 +30,7 @@ def test_analise_schema_sucesso():
     assert esquema.nicho == "Utilidades"
     assert esquema.sub_nicho is None
     assert esquema.preco_oferta_estimado == 199.90
+    assert esquema.preco_moeda == "BRL"
 
 
 def test_analise_schema_rejeita_nicho_livre():
@@ -67,6 +69,25 @@ def test_nicho_canonico_ignora_caixa_e_acento():
     assert nicho_canonico("pet shop") is None
     assert nicho_canonico("") is None
     assert "Outros" in NICHOS_CANONICOS
+
+
+def test_analise_schema_descarta_preco_ambiguo():
+    dados = {
+        "transcricao_video": "Custa cento e noventa.",
+        "gancho_3s": "Produto na mão.",
+        "nicho": "Casa",
+        "gatilho_mental": "Preço",
+        "objecoes_quebradas": [],
+        "preco_oferta_estimado": 199.90,
+        "angulos_alternativos": [],
+    }
+    sem_moeda = AnaliseAnuncioSchema(**dados)
+    assert sem_moeda.preco_oferta_estimado is None
+    assert sem_moeda.preco_moeda is None
+
+    euro = AnaliseAnuncioSchema(**dados, preco_moeda="EUR")
+    assert euro.preco_oferta_estimado is None
+    assert euro.preco_moeda is None
 
 
 def test_analise_schema_rejeita_mais_de_um_angulo():

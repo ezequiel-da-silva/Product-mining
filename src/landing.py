@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import socket
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 
@@ -26,8 +27,20 @@ _META_PRECO = re.compile(
     re.IGNORECASE,
 )
 _CONTEUDO_META = re.compile(r"content=[\"']([^\"']+)[\"']", re.IGNORECASE)
-_PRECO_REAL = re.compile(r"R\$\s*(\d{1,3}(?:\.\d{3})+,\d{2}|\d+,\d{2})")
+_PRECO_REAL = re.compile(r"R\$\s*(\d{1,3}(?:\.\d{3})+,\d{2}|\d+,\d{2}|\d+\.\d{2})(?!\d)")
+_PRECO_DOLAR = re.compile(r"(?<![A-Za-z])(?:US\$|\$)\s*(\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2})(?!\d)")
+_META_MOEDA = re.compile(
+    r"<meta[^>]+(?:property|name)=[\"'](?:product:price:currency|og:price:currency)[\"'][^>]*>",
+    re.IGNORECASE,
+)
 _HOSTS_PROIBIDOS = {"localhost", "metadata.google.internal"}
+_MOEDAS = {"BRL", "USD"}
+
+
+@dataclass(frozen=True)
+class PrecoLido:
+    valor: Decimal
+    moeda: str
 
 
 def _ip_proibido(texto: str) -> bool:
@@ -166,32 +179,82 @@ def _parece_ip(hostname: str) -> bool:
     return True
 
 
-def _decimal_preco(valor: object) -> Decimal | None:
-    if isinstance(valor, bool) or isinstance(valor, (list, dict)):
+def _moeda_explicita(texto: object) -> str | None:
+    if not isinstance(texto, str) or not texto.strip():
         return None
-    if isinstance(valor, (int, float)):
-        texto = str(valor)
-    elif isinstance(valor, str):
-        texto = valor.strip().replace("R$", "").replace(" ", "")
-        if re.fullmatch(r"\d{1,3}(?:\.\d{3})+,\d{2}", texto) or re.fullmatch(r"\d+,\d{2}", texto):
-            texto = texto.replace(".", "").replace(",", ".")
-    else:
+    return texto.strip().upper()
+
+
+def _prefixo_moeda(texto: str) -> tuple[str | None, str]:
+    cru = texto.strip()
+    if cru.upper().startswith("R$"):
+        return "BRL", cru[2:]
+    if cru.upper().startswith("US$"):
+        return "USD", cru[3:]
+    if cru.startswith("$"):
+        return "USD", cru[1:]
+    return None, cru
+
+
+def _classificar_numero(texto: str) -> tuple[Decimal, str] | None:
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+,\d{2}", texto) or re.fullmatch(r"\d+,\d{2}", texto):
+        return Decimal(texto.replace(".", "").replace(",", ".")), "br"
+    if re.fullmatch(r"\d{1,3}(?:,\d{3})+\.\d{2}", texto):
+        return Decimal(texto.replace(",", "")), "us"
+    if re.fullmatch(r"\d+\.\d{2}", texto):
+        return Decimal(texto), "decimal"
+    if re.fullmatch(r"\d+", texto):
+        return Decimal(texto), "inteiro"
+    return None
+
+
+def _combinar(numero: Decimal, forma: str, moeda: str | None) -> PrecoLido | None:
+    if moeda is not None and moeda not in _MOEDAS:
         return None
-    try:
-        numero = Decimal(texto)
-    except InvalidOperation:
+    if forma == "br":
+        if moeda not in {None, "BRL"}:
+            return None
+        moeda = "BRL"
+    elif forma == "us":
+        if moeda not in {None, "USD"}:
+            return None
+        moeda = "USD"
+    elif moeda not in _MOEDAS:
         return None
     if not numero.is_finite() or numero <= 0 or numero > PRECO_MAXIMO:
         return None
-    return numero.quantize(Decimal("0.01"))
+    return PrecoLido(numero.quantize(Decimal("0.01")), moeda)
 
 
-def _preco_no_objeto(node: object, profundidade: int = 0) -> Decimal | None:
+def ler_preco(valor: object, moeda: str | None = None) -> PrecoLido | None:
+    """Aceita BRL ou USD quando o número e a moeda não disputam o mesmo valor."""
+    if isinstance(valor, bool) or isinstance(valor, (list, dict)):
+        return None
+    if isinstance(valor, (int, float)):
+        try:
+            numero = Decimal(str(valor))
+        except InvalidOperation:
+            return None
+        forma = "inteiro" if numero == numero.to_integral_value() else "decimal"
+        return _combinar(numero, forma, moeda)
+    if not isinstance(valor, str):
+        return None
+    prefixo, resto = _prefixo_moeda(valor)
+    if prefixo and moeda and prefixo != moeda:
+        return None
+    classificado = _classificar_numero(resto.strip().replace(" ", ""))
+    if classificado is None:
+        return None
+    numero, forma = classificado
+    return _combinar(numero, forma, moeda or prefixo)
+
+
+def _preco_no_objeto(node: object, profundidade: int = 0) -> PrecoLido | None:
     if profundidade > 6:
         return None
     if isinstance(node, dict):
         if "price" in node:
-            preco = _decimal_preco(node.get("price"))
+            preco = ler_preco(node.get("price"), _moeda_explicita(node.get("priceCurrency")))
             if preco is not None:
                 return preco
         for chave in ("offers", "offer", "@graph"):
@@ -207,7 +270,15 @@ def _preco_no_objeto(node: object, profundidade: int = 0) -> Decimal | None:
     return None
 
 
-def extrair_preco_html(html: str) -> Decimal | None:
+def _moeda_na_meta(html: str) -> str | None:
+    for meta in _META_MOEDA.findall(html):
+        conteudo = _CONTEUDO_META.search(meta)
+        if conteudo:
+            return _moeda_explicita(conteudo.group(1))
+    return None
+
+
+def extrair_preco_html(html: str) -> PrecoLido | None:
     for bloco in _JSON_LD.findall(html):
         try:
             dados = json.loads(bloco)
@@ -216,16 +287,20 @@ def extrair_preco_html(html: str) -> Decimal | None:
         preco = _preco_no_objeto(dados)
         if preco is not None:
             return preco
+    moeda_meta = _moeda_na_meta(html)
     for meta in _META_PRECO.findall(html):
         conteudo = _CONTEUDO_META.search(meta)
         if conteudo:
-            preco = _decimal_preco(conteudo.group(1))
+            preco = ler_preco(conteudo.group(1), moeda_meta)
             if preco is not None:
                 return preco
     encontrado = _PRECO_REAL.search(html)
-    if not encontrado:
-        return None
-    return _decimal_preco(encontrado.group(1))
+    if encontrado:
+        return ler_preco(encontrado.group(1), "BRL")
+    dolar = _PRECO_DOLAR.search(html)
+    if dolar:
+        return ler_preco(dolar.group(0))
+    return None
 
 
 def _ler_corpo(resposta: requests.Response) -> str | None:
@@ -246,7 +321,7 @@ def _ler_corpo(resposta: requests.Response) -> str | None:
     return b"".join(pedacos).decode("utf-8", errors="replace")
 
 
-def buscar_preco(url: str) -> Decimal | None:
+def buscar_preco(url: str) -> PrecoLido | None:
     """Busca o preço na URL desta oferta. Recusa rede local e não segue redirect às cegas."""
     atual = url
     for _ in range(MAX_REDIRECIONAMENTOS + 1):

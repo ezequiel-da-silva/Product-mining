@@ -97,6 +97,7 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
         "nicho": "Saúde e Beleza",
         "gatilho_mental": "Escassez",
         "preco_oferta_estimado": 99.90,
+        "preco_moeda": "BRL",
         "margem_estimada_pct": 60,
         "objecoes_quebradas": ["Caro"],
         "angulos_alternativos": [],
@@ -127,6 +128,8 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
     assert parametros_sql["sub_nicho"] is None
     assert "sub_nicho = %(sub_nicho)s" in args_chamada[0]
     assert parametros_sql["preco"] == 99.90
+    assert parametros_sql["moeda"] == "BRL"
+    assert "preco_moeda = %(moeda)s" in args_chamada[0]
     assert parametros_sql["embedding"] == "[0.15,-0.02,0.88]"
     assert parametros_sql["embedding_texto_hash"] == _hash_texto_embedding(_texto_embedding(dados_mock))
     assert parametros_sql["token"] == "token-1"

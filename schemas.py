@@ -74,6 +74,11 @@ class AnaliseAnuncioSchema(BaseModel):
         description="Preço numérico do produto (apenas números), se for mencionado no vídeo ou na copy. Nulo se não houver.",
         default=None,
     )
+    preco_moeda: Optional[str] = Field(
+        default=None,
+        max_length=8,
+        description="Moeda ISO do preço. Só BRL ou USD são gravados; sem moeda o preço é descartado.",
+    )
     margem_estimada_pct: Optional[int] = Field(
         description="Estimativa da margem bruta de lucro em porcentagem (0 a 100), considerando sourcing na China (AliExpress/1688).",
         default=None,
@@ -94,4 +99,14 @@ class AnaliseAnuncioSchema(BaseModel):
             self.sub_nicho = sub
             return self
         self.sub_nicho = None
+        return self
+
+    @model_validator(mode="after")
+    def descartar_preco_sem_moeda(self) -> "AnaliseAnuncioSchema":
+        moeda = (self.preco_moeda or "").strip().upper()
+        if self.preco_oferta_estimado is None or moeda not in {"BRL", "USD"}:
+            self.preco_oferta_estimado = None
+            self.preco_moeda = None
+            return self
+        self.preco_moeda = moeda
         return self

@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS ofertas (
     sub_nicho VARCHAR(100),
     gatilho_mental VARCHAR(100),
     preco_oferta_estimado NUMERIC(10, 2),
+    preco_moeda VARCHAR(3),
     margem_estimada_pct SMALLINT,
     catalogo_mais_vendidos JSONB,
     objecoes_quebradas JSONB,       -- Lista estruturada de objeções resolvidas
@@ -51,7 +52,9 @@ CREATE TABLE IF NOT EXISTS ofertas (
     CONSTRAINT ofertas_margem_estimada_pct_check
         CHECK (margem_estimada_pct IS NULL OR margem_estimada_pct BETWEEN 0 AND 100),
     CONSTRAINT ofertas_preco_oferta_estimado_check
-        CHECK (preco_oferta_estimado IS NULL OR preco_oferta_estimado >= 0)
+        CHECK (preco_oferta_estimado IS NULL OR preco_oferta_estimado >= 0),
+    CONSTRAINT ofertas_preco_moeda_check
+        CHECK (preco_moeda IS NULL OR preco_moeda IN ('BRL', 'USD'))
 );
 
 ALTER TABLE ofertas
@@ -124,6 +127,18 @@ EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
 
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS preco_moeda VARCHAR(3);
+
+DO $$
+BEGIN
+    ALTER TABLE ofertas
+        ADD CONSTRAINT ofertas_preco_moeda_check
+        CHECK (preco_moeda IS NULL OR preco_moeda IN ('BRL', 'USD'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     versao TEXT PRIMARY KEY,
     aplicada_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -142,5 +157,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('010_tokens_ia'),
     ('011_criativo_lp_score'),
     ('012_nicho_canonico'),
-    ('013_privilegios_estreitos')
+    ('013_privilegios_estreitos'),
+    ('014_preco_moeda')
 ON CONFLICT (versao) DO NOTHING;
