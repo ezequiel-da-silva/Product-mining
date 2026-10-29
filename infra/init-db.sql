@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS ofertas (
     transcricao_video TEXT,
     gancho_3s TEXT,
     nicho VARCHAR(100),
+    sub_nicho VARCHAR(100),
     gatilho_mental VARCHAR(100),
     preco_oferta_estimado NUMERIC(10, 2),
     margem_estimada_pct SMALLINT,
@@ -64,6 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_ofertas_score ON ofertas (score DESC);
 CREATE INDEX IF NOT EXISTS idx_ofertas_status ON ofertas (status_qualificacao);
 CREATE INDEX IF NOT EXISTS idx_ofertas_page_id ON ofertas (page_id);
 CREATE INDEX IF NOT EXISTS idx_ofertas_phash ON ofertas (phash_criativo);
+CREATE INDEX IF NOT EXISTS idx_ofertas_nicho ON ofertas (nicho);
 CREATE INDEX IF NOT EXISTS idx_ofertas_concluidas_captura
     ON ofertas (data_ultima_captura DESC, id DESC)
     WHERE status_qualificacao = 'concluido';
@@ -138,5 +140,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('008_falhas_ia_em'),
     ('009_revogar_delete_pipeline'),
     ('010_tokens_ia'),
-    ('011_criativo_lp_score')
+    ('011_criativo_lp_score'),
+    ('012_nicho_canonico')
 ON CONFLICT (versao) DO NOTHING;

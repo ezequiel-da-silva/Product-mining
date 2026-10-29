@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from schemas import NICHOS_CANONICOS
 from src.dashboard import (
     ALTURA_VIDEO,
     BOTAO_DETALHES,
@@ -30,6 +31,7 @@ from src.dashboard import (
     ROTULOS_OFERTAS,
     TITULO_OFERTAS_RECENTES,
     TITULO_PAINEL,
+    _aplicar_busca,
     _descartar_credencial_na_url,
     _dialogo_oferta,
     _mostrar_cards,
@@ -48,6 +50,7 @@ from src.dashboard import (
     gerar_embedding_busca,
     listar_nichos_concluidos,
     rotulo_margem,
+    rotulo_nicho,
     similaridade_percentual,
     texto_comercial,
     texto_nota,
@@ -90,9 +93,11 @@ def test_dashboard_tem_rotulos_formato_e_titulo_sem_emoji():
     assert NOTA_MINIMA == 75
     assert _opcoes_filtro(["Fitness e Esportes"]) == [
         "Todos",
+        *NICHOS_CANONICOS,
         "Fitness e Esportes",
         "Nota de 75 ou mais",
     ]
+    assert _opcoes_filtro(["Pet"]) == ["Todos", *NICHOS_CANONICOS, "Nota de 75 ou mais"]
 
 
 def _conexao_com_linhas(linhas):
@@ -101,6 +106,44 @@ def _conexao_com_linhas(linhas):
     conexao = MagicMock()
     conexao.cursor.return_value.__enter__.return_value = cursor
     return conexao, cursor
+
+
+def test_rotulo_de_outros_inclui_sub_nicho():
+    assert rotulo_nicho({"nicho": "Outros", "sub_nicho": "Cachorro"}) == "Outros: Cachorro"
+    assert rotulo_nicho({"nicho": "Pet", "sub_nicho": "Gatos"}) == "Pet"
+    assert rotulo_nicho({}) == "—"
+
+
+def test_busca_por_nicho_canonico_nao_chama_embedding(monkeypatch):
+    import src.dashboard as dashboard
+
+    estado: dict = {}
+    monkeypatch.setattr(dashboard.st, "session_state", estado)
+    embedding = MagicMock()
+    monkeypatch.setattr(dashboard, "gerar_embedding_busca", embedding)
+
+    _aplicar_busca("  Saúde e Beleza ")
+
+    embedding.assert_not_called()
+    assert estado["filtro_ofertas"] == "Saúde e Beleza"
+    assert estado["ofertas_modo"] == "recentes"
+    assert estado["ofertas_vetor"] is None
+    assert estado["ofertas_frase"] == ""
+
+
+def test_busca_por_sinonimo_continua_vetorial(monkeypatch):
+    import src.dashboard as dashboard
+
+    estado: dict = {}
+    monkeypatch.setattr(dashboard.st, "session_state", estado)
+    embedding = MagicMock(return_value=[0.2] * DIMENSAO_EMBEDDING)
+    monkeypatch.setattr(dashboard, "gerar_embedding_busca", embedding)
+
+    _aplicar_busca("Pet Shop")
+
+    embedding.assert_called_once_with("pet shop")
+    assert estado["ofertas_modo"] == "busca"
+    assert "filtro_ofertas" not in estado
 
 
 def test_normalizar_frase_busca_ignora_espaco_e_maiuscula():

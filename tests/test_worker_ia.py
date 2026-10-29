@@ -32,6 +32,7 @@ with (
 ):
     from src.worker_ia import (
         _baixar_video_temporario,
+        _enquadrar_nicho,
         _hash_texto_embedding,
         _texto_embedding,
         persistir_resultado_ia,
@@ -47,11 +48,21 @@ def _dns(ip: str):
     return resolve
 
 
+def test_enquadrar_nicho_guarda_texto_livre_em_outros():
+    canonico = _enquadrar_nicho({"nicho": "  pet "})
+    assert canonico["nicho"] == "Pet"
+    assert canonico["sub_nicho"] is None
+
+    livre = _enquadrar_nicho({"nicho": "Pet Shop"})
+    assert livre["nicho"] == "Outros"
+    assert livre["sub_nicho"] == "Pet Shop"
+
+
 def _dados_analise():
     return {
         "transcricao_video": "Texto transcrito",
         "gancho_3s": "Abertura rápida",
-        "nicho": "Beleza",
+        "nicho": "Saúde e Beleza",
         "gatilho_mental": "Escassez",
         "objecoes_quebradas": ["Caro"],
         "angulos_alternativos": [],
@@ -83,7 +94,7 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
     dados_mock = {
         "transcricao_video": "Texto transcrito",
         "gancho_3s": "Abertura rápida",
-        "nicho": "Beleza",
+        "nicho": "Saúde e Beleza",
         "gatilho_mental": "Escassez",
         "preco_oferta_estimado": 99.90,
         "margem_estimada_pct": 60,
@@ -112,6 +123,9 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
     parametros_sql = args_chamada[1]
 
     assert parametros_sql["id"] == 42
+    assert parametros_sql["nicho"] == "Saúde e Beleza"
+    assert parametros_sql["sub_nicho"] is None
+    assert "sub_nicho = %(sub_nicho)s" in args_chamada[0]
     assert parametros_sql["preco"] == 99.90
     assert parametros_sql["embedding"] == "[0.15,-0.02,0.88]"
     assert parametros_sql["embedding_texto_hash"] == _hash_texto_embedding(_texto_embedding(dados_mock))
@@ -292,7 +306,7 @@ def test_falha_no_embedding_apos_geracao_retry_leva_a_analise(monkeypatch):
         worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
 
     analise = task_self.retry.call_args.kwargs["kwargs"]["analise"]
-    assert analise["nicho"] == "Beleza"
+    assert analise["nicho"] == "Saúde e Beleza"
     worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", False)
 
 
@@ -316,7 +330,7 @@ def test_retry_com_analise_nao_baixa_nem_chama_gemini(monkeypatch):
 
     result = worker.processar_anuncio_multimodal(MagicMock(), 7, VIDEO_R2_URL, "copy", analise=_dados_analise())
 
-    assert result["nicho"] == "Beleza"
+    assert result["nicho"] == "Saúde e Beleza"
     baixar.assert_not_called()
     upload.assert_not_called()
     gerar.assert_not_called()

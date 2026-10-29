@@ -357,6 +357,7 @@ def test_copiar_enriquecimento_so_conclui_pendente_a_partir_de_irma_concluida(mo
     assert "status_qualificacao = 'pendente_lp'" in consulta
     assert "AND status_qualificacao = 'concluido'" in consulta
     assert "embedding_analise = origem.embedding_analise" in consulta
+    assert "sub_nicho = origem.sub_nicho" in consulta
     assert "LEAST(destino.score + %(bonus)s, %(teto)s)" in consulta
     assert "preco_oferta_estimado" not in consulta
     assert "margem_estimada_pct" not in consulta

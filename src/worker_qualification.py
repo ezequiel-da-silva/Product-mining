@@ -531,6 +531,7 @@ def _copiar_enriquecimento(oferta_id: int, url_video_r2: str | None, phash: str 
                 SET transcricao_video = origem.transcricao_video,
                     gancho_3s = origem.gancho_3s,
                     nicho = origem.nicho,
+                    sub_nicho = origem.sub_nicho,
                     gatilho_mental = origem.gatilho_mental,
                     objecoes_quebradas = origem.objecoes_quebradas,
                     angulos_alternativos = origem.angulos_alternativos,

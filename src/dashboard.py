@@ -13,6 +13,7 @@ from core.secrets import ler_segredo
 from google import genai
 from google.genai import types
 from psycopg.rows import dict_row
+from schemas import NICHOS_CANONICOS, nicho_canonico
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ MODELO_EMBEDDING = "gemini-embedding-2"
 DIMENSAO_EMBEDDING = 768
 PAGE_SIZE = 10
 COLUNAS_OFERTA = """
-    id, nicho, gancho_3s, gatilho_mental, url_destino, copy_texto,
+    id, nicho, sub_nicho, gancho_3s, gatilho_mental, url_destino, copy_texto,
     transcricao_video, url_video_r2, objecoes_quebradas, angulos_alternativos,
     preco_oferta_estimado, score, margem_estimada_pct, data_ultima_captura,
     dados_comerciais_ausentes
@@ -44,6 +45,7 @@ COLUNAS_OFERTA = """
 ROTULOS_OFERTAS = {
     "id": "Identificador",
     "nicho": "Nicho",
+    "sub_nicho": "Subnicho",
     "gancho_3s": "Gancho",
     "gatilho_mental": "Gatilho",
     "url_destino": "Link da oferta",
@@ -296,6 +298,16 @@ def texto_nota(nota: object) -> str:
     return f"{nota}/100"
 
 
+def rotulo_nicho(oferta: dict) -> str:
+    nicho = str(oferta.get("nicho") or "").strip()
+    sub = str(oferta.get("sub_nicho") or "").strip()
+    if not nicho:
+        return "—"
+    if nicho == "Outros" and sub:
+        return f"Outros: {sub}"
+    return nicho
+
+
 def rotulo_margem(valor: object) -> str:
     if valor is None:
         return "Margem não identificada"
@@ -402,7 +414,7 @@ def _escrever_angulos(valor: object) -> None:
 
 @st.dialog("Oferta", width="large")
 def _dialogo_oferta(oferta: dict) -> None:
-    st.subheader(oferta.get("nicho") or "Oferta")
+    st.subheader(rotulo_nicho(oferta))
     nota = oferta.get("score")
     st.caption(
         f"{ROTULOS_OFERTAS['score']}: {texto_nota(nota)} · "
@@ -481,7 +493,22 @@ def _reiniciar_listagem(frase: str = "", vetor: list[float] | None = None) -> No
 
 
 def _opcoes_filtro(nichos: list[str]) -> list[str]:
-    return [FILTRO_TODOS, *nichos, FILTRO_NOTA]
+    nomes: list[str] = []
+    for nome in (*NICHOS_CANONICOS, *nichos):
+        if nome and nome not in nomes:
+            nomes.append(nome)
+    return [FILTRO_TODOS, *nomes, FILTRO_NOTA]
+
+
+def _aplicar_busca(frase: str) -> None:
+    normalizada = _normalizar_frase_busca(frase)
+    nicho = nicho_canonico(normalizada)
+    if nicho:
+        st.session_state["filtro_ofertas"] = nicho
+        _reiniciar_listagem()
+        return
+    vetor = gerar_embedding_busca(normalizada) if normalizada else None
+    _reiniciar_listagem(normalizada, vetor)
 
 
 def _sincronizar_filtro(opcoes: list[str]) -> str:
@@ -529,7 +556,7 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
         for deslocamento, oferta in enumerate(ofertas[inicio : inicio + 3]):
             with colunas[deslocamento]:
                 with st.container(border=True):
-                    nicho = oferta.get("nicho") or "—"
+                    nicho = rotulo_nicho(oferta)
                     oferta_id = oferta.get("id")
                     st.markdown(f"**{nicho}**")
                     st.caption(texto_comercial(oferta))
@@ -655,9 +682,7 @@ def _painel_ofertas(conn) -> None:
         st.session_state["descartadas_vistas"] = mostrar_descartadas
 
     if buscar:
-        frase = _normalizar_frase_busca(frase)
-        vetor = gerar_embedding_busca(frase) if frase else None
-        _reiniciar_listagem(frase, vetor)
+        _aplicar_busca(frase)
 
     opcoes = _opcoes_filtro(listar_nichos_concluidos(conn))
     filtro = _sincronizar_filtro(opcoes)

@@ -39,5 +39,8 @@ BEGIN
   IF to_regclass('public.triagem_oferta') IS NOT NULL THEN
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE triagem_oferta TO streamlit_readonly;
   END IF;
+  IF to_regclass('public.triagem_oferta_id_seq') IS NOT NULL THEN
+    GRANT USAGE, SELECT ON SEQUENCE triagem_oferta_id_seq TO streamlit_readonly;
+  END IF;
 END $$;
 SQL

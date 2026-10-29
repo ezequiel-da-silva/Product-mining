@@ -28,7 +28,7 @@ if BASE_DIR not in sys.path:
 from core.celery_app import app  # noqa: E402
 from core.pontuacao import BONUS_ANALISE_IA, TETO_SCORE  # noqa: E402
 from core.secrets import ler_segredo  # noqa: E402
-from schemas import AnaliseAnuncioSchema  # noqa: E402
+from schemas import AnaliseAnuncioSchema, nicho_canonico  # noqa: E402
 from src.comercial import qualificar_pagina  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -177,6 +177,7 @@ UPDATE ofertas AS irma
 SET transcricao_video = origem.transcricao_video,
     gancho_3s = origem.gancho_3s,
     nicho = origem.nicho,
+    sub_nicho = origem.sub_nicho,
     gatilho_mental = origem.gatilho_mental,
     objecoes_quebradas = origem.objecoes_quebradas,
     angulos_alternativos = origem.angulos_alternativos,
@@ -215,6 +216,7 @@ def persistir_resultado_ia(
                 SET transcricao_video = %(transcricao)s,
                     gancho_3s = %(gancho)s,
                     nicho = %(nicho)s,
+                    sub_nicho = %(sub_nicho)s,
                     gatilho_mental = %(gatilho)s,
                     preco_oferta_estimado = %(preco)s,
                     margem_estimada_pct = %(margem)s,
@@ -239,6 +241,7 @@ def persistir_resultado_ia(
                     "transcricao": dados["transcricao_video"],
                     "gancho": dados["gancho_3s"],
                     "nicho": dados["nicho"],
+                    "sub_nicho": dados.get("sub_nicho"),
                     "gatilho": dados["gatilho_mental"],
                     "preco": dados.get("preco_oferta_estimado"),
                     "margem": dados.get("margem_estimada_pct"),
@@ -398,9 +401,30 @@ def _aguardar_upload_ativo(video_file, timeout_segundos: int = 90):
     return video_file
 
 
+def _enquadrar_nicho(dados: dict) -> dict:
+    """Encaixa texto livre já pago no catálogo, sem nova chamada ao modelo."""
+    ajustado = dict(dados)
+    bruto = str(ajustado.get("nicho") or "").strip()
+    canonico = nicho_canonico(bruto)
+    if canonico:
+        ajustado["nicho"] = canonico
+        if canonico != "Outros":
+            ajustado["sub_nicho"] = None
+        return ajustado
+    if bruto:
+        sub = str(ajustado.get("sub_nicho") or "").strip() or bruto
+        ajustado["nicho"] = "Outros"
+        ajustado["sub_nicho"] = sub[:100]
+    return ajustado
+
+
 def _texto_embedding(dados: dict) -> str:
     transcricao = str(dados["transcricao_video"])[:500]
-    return f"{dados['nicho']} | {dados['gatilho_mental']} | {dados['gancho_3s']} | {transcricao}"
+    nicho = str(dados["nicho"])
+    sub = str(dados.get("sub_nicho") or "").strip()
+    if sub:
+        nicho = f"{nicho}: {sub}"
+    return f"{nicho} | {dados['gatilho_mental']} | {dados['gancho_3s']} | {transcricao}"
 
 
 def _hash_texto_embedding(texto: str) -> str:
@@ -641,7 +665,7 @@ def processar_anuncio_multimodal(
 
     try:
         if analise:
-            resultado_validado = AnaliseAnuncioSchema(**analise)
+            resultado_validado = AnaliseAnuncioSchema(**_enquadrar_nicho(analise))
             logger.info("[Oferta %s] Retry reaproveita a análise já paga.", oferta_id)
         else:
             tmp_path = _baixar_video_temporario(video_url_r2)
@@ -658,7 +682,7 @@ def processar_anuncio_multimodal(
             )
             uso_tokens = _registrar_uso_tokens(oferta_id, resposta)
             dados_extraidos = json.loads(resposta.text)
-            resultado_validado = AnaliseAnuncioSchema(**dados_extraidos)
+            resultado_validado = AnaliseAnuncioSchema(**_enquadrar_nicho(dados_extraidos))
 
         vetor_embedding = _obter_vetor_embedding(oferta_id, resultado_validado.model_dump())
 
