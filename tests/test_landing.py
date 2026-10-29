@@ -27,12 +27,90 @@ def test_host_privado_e_metadata_sao_recusados(monkeypatch):
 def test_busca_nao_chama_a_rede_quando_o_host_e_privado(monkeypatch):
     import src.landing as landing
 
-    monkeypatch.setattr(landing, "host_publico", lambda _host: False)
+    monkeypatch.setattr(landing, "resolver_publico", lambda _host: None)
     pedido = MagicMock()
-    monkeypatch.setattr(landing.requests, "get", pedido)
+    monkeypatch.setattr(landing, "_abrir_pagina", pedido)
 
     assert buscar_preco("http://127.0.0.1/admin") is None
     pedido.assert_not_called()
+
+
+def test_socket_abre_no_ip_validado_mesmo_se_o_dns_mudar(monkeypatch):
+    import urllib3.util.connection as conexao_urllib
+
+    consultas: list[str] = []
+
+    def getaddrinfo(host, _port, *_args, **_kwargs):
+        consultas.append(host)
+        if host == "loja.example":
+            ip = "1.1.1.1" if consultas.count("loja.example") == 1 else "169.254.169.254"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (host, 0))]
+
+    destinos: list[str] = []
+
+    def criar(address, *_args, **_kwargs):
+        destinos.append(address[0])
+        raise OSError("sem rede")
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(conexao_urllib, "create_connection", criar)
+
+    assert buscar_preco("https://loja.example/produto") is None
+    assert destinos == ["1.1.1.1"]
+    assert consultas.count("loja.example") == 1
+
+
+def test_sni_permanece_o_nome_original(monkeypatch):
+    import requests
+    import urllib3.connection as conexao_https
+    import urllib3.util.connection as conexao_urllib
+
+    def getaddrinfo(host, _port, *_args, **_kwargs):
+        if host == "loja.example":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 0))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (host, 0))]
+
+    def criar(_address, *_args, **_kwargs):
+        return MagicMock()
+
+    vistos: dict[str, str] = {}
+
+    def embrulho(**kwargs):
+        vistos["sni"] = kwargs["server_hostname"]
+        vistos["nome"] = kwargs["assert_hostname"]
+        raise requests.ConnectionError("sem tls")
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(conexao_urllib, "create_connection", criar)
+    monkeypatch.setattr(conexao_https, "_ssl_wrap_socket_and_match_hostname", embrulho)
+
+    assert buscar_preco("https://loja.example/produto") is None
+    assert vistos == {"sni": "loja.example", "nome": "loja.example"}
+
+
+def test_redirect_repete_a_checagem_e_nao_abre_host_privado(monkeypatch):
+    import src.landing as landing
+
+    def resolver(hostname: str):
+        if hostname == "loja.example":
+            return ["1.1.1.1"]
+        return None
+
+    aberturas: list[tuple[str, str]] = []
+
+    def abrir(url, hostname, ip):
+        aberturas.append((url, hostname, ip))
+        resposta = MagicMock()
+        resposta.is_redirect = True
+        resposta.headers = {"Location": "http://169.254.169.254/latest/meta-data/"}
+        return resposta
+
+    monkeypatch.setattr(landing, "resolver_publico", resolver)
+    monkeypatch.setattr(landing, "_abrir_pagina", abrir)
+
+    assert buscar_preco("https://loja.example/produto") is None
+    assert aberturas == [("https://loja.example/produto", "loja.example", "1.1.1.1")]
 
 
 def test_qualificar_pagina_marca_dados_ausentes_quando_nao_ha_preco(monkeypatch):

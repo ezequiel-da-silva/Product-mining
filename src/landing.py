@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 
 import requests
+import urllib3
 
 logger = logging.getLogger(__name__)
 
@@ -46,19 +47,115 @@ def _ip_proibido(texto: str) -> bool:
     )
 
 
-def host_publico(hostname: str) -> bool:
+def resolver_publico(hostname: str) -> list[str] | None:
+    """Resolve uma vez. Recusa o nome se qualquer endereço não for público."""
     nome = hostname.strip(".").lower()
     if not nome or nome in _HOSTS_PROIBIDOS or nome.endswith(".local"):
-        return False
-    if _ip_proibido(nome) if _parece_ip(nome) else False:
-        return False
+        return None
+    if _parece_ip(nome):
+        literal = nome.split("%", 1)[0]
+        if _ip_proibido(literal):
+            return None
+        return [literal]
     try:
-        enderecos = socket.getaddrinfo(nome, None)
+        enderecos = socket.getaddrinfo(nome, None, type=socket.SOCK_STREAM)
     except socket.gaierror:
-        return False
-    if not enderecos:
-        return False
-    return all(not _ip_proibido(item[4][0]) for item in enderecos)
+        return None
+    ips: list[str] = []
+    for item in enderecos:
+        ip = item[4][0]
+        if _ip_proibido(ip):
+            return None
+        if ip not in ips:
+            ips.append(ip)
+    if not ips:
+        return None
+    return ips
+
+
+def host_publico(hostname: str) -> bool:
+    return resolver_publico(hostname) is not None
+
+
+def _conexao_no_ip(ip: str, base: type) -> type:
+    class ConexaoNoIp(base):
+        def _new_conn(self):  # type: ignore[no-untyped-def]
+            nome = self._dns_host
+            self._dns_host = ip
+            try:
+                return super()._new_conn()
+            finally:
+                self._dns_host = nome
+
+    return ConexaoNoIp
+
+
+class _GerenteIpFixo(urllib3.PoolManager):
+    def __init__(self, ip: str, nome: str, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._ip = ip
+        self._nome = nome
+
+    def _new_pool(self, scheme, host, port, request_context=None):  # type: ignore[no-untyped-def]
+        contexto = dict(request_context) if request_context is not None else None
+        if scheme == "https":
+            if contexto is None:
+                contexto = dict(self.connection_pool_kw)
+            contexto["server_hostname"] = self._nome
+            contexto["assert_hostname"] = self._nome
+        pool = super()._new_pool(scheme, host, port, request_context=contexto)
+        pool.ConnectionCls = _conexao_no_ip(self._ip, pool.ConnectionCls)
+        return pool
+
+
+class _AdaptadorIpFixo(requests.adapters.HTTPAdapter):
+    def __init__(self, ip: str, nome: str) -> None:
+        self._ip = ip
+        self._nome = nome
+        super().__init__()
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):  # type: ignore[no-untyped-def]
+        self._pool_connections = connections
+        self._pool_maxsize = maxsize
+        self._pool_block = block
+        self.poolmanager = _GerenteIpFixo(
+            self._ip,
+            self._nome,
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            **pool_kwargs,
+        )
+
+
+def _abrir_pagina(url: str, hostname: str, ip: str) -> requests.Response:
+    """Abre o socket no IP já validado e mantém o SNI/Host do nome original."""
+    sessao = requests.Session()
+    sessao.trust_env = False
+    adaptador = _AdaptadorIpFixo(ip, hostname)
+    sessao.mount("https://", adaptador)
+    sessao.mount("http://", adaptador)
+    try:
+        resposta = sessao.get(
+            url,
+            allow_redirects=False,
+            timeout=TIMEOUT,
+            stream=True,
+            headers={"User-Agent": "ProductMining/1.0"},
+        )
+    except requests.RequestException:
+        sessao.close()
+        raise
+    fechar_resposta = resposta.close
+
+    def fechar() -> None:
+        try:
+            fechar_resposta()
+        finally:
+            sessao.close()
+
+    resposta.close = fechar  # type: ignore[method-assign]
+    return resposta
 
 
 def _parece_ip(hostname: str) -> bool:
@@ -156,17 +253,12 @@ def buscar_preco(url: str) -> Decimal | None:
         partes = urlsplit(atual)
         if partes.scheme not in {"http", "https"} or not partes.hostname:
             return None
-        if not host_publico(partes.hostname):
+        ips = resolver_publico(partes.hostname)
+        if not ips:
             logger.info("Página de destino recusada por host não público.")
             return None
         try:
-            resposta = requests.get(
-                atual,
-                allow_redirects=False,
-                timeout=TIMEOUT,
-                stream=True,
-                headers={"User-Agent": "ProductMining/1.0"},
-            )
+            resposta = _abrir_pagina(atual, partes.hostname, ips[0])
         except requests.RequestException:
             logger.info("Falha ao ler a página de destino.")
             return None
