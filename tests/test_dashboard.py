@@ -14,11 +14,13 @@ from src.dashboard import (
     BOTAO_DETALHES,
     COLUNAS_OFERTA,
     DIMENSAO_EMBEDDING,
+    ESTIMATIVA_SOURCING,
     FILTRO_NOTA,
     FILTRO_TODOS,
     GANCHO_LIMITE,
     LARGURA_VIDEO,
     LEGENDA_BUSCA,
+    LEGENDA_MARGEM,
     LIMITE_EMBEDDING_POR_MINUTO,
     NICHOS_CONCLUIDOS_SQL,
     NOTA_MINIMA,
@@ -53,6 +55,7 @@ from src.dashboard import (
     gancho_curto,
     gerar_embedding_busca,
     listar_nichos_concluidos,
+    rotulo_acessivel_detalhes,
     rotulo_margem,
     rotulo_nicho,
     similaridade_percentual,
@@ -326,6 +329,10 @@ def test_nota_margem_e_checkout_sao_explicitos():
     assert rotulo_margem(45) == "Margem média: 45%"
     assert rotulo_margem(10) == "Margem baixa: 10%"
     assert rotulo_margem(None) == "Margem não identificada"
+    assert ESTIMATIVA_SOURCING == "Estimativa Sourcing (China)"
+    assert "conciliação fiscal" in LEGENDA_MARGEM
+    assert rotulo_acessivel_detalhes({"nicho": "Pet", "id": 7}) == "Ver detalhes da oferta Pet #7"
+    assert rotulo_acessivel_detalhes({"id": 3}) == "Ver detalhes da oferta sem nicho #3"
     assert checkout_detectado("https://loja.myshopify.com/products/x") == "Shopify"
     assert checkout_detectado("https://exemplo.com") is None
     assert texto_comercial({"dados_comerciais_ausentes": True}) == "Dados comerciais ausentes"
@@ -439,7 +446,11 @@ def test_cards_e_modal_substituem_a_tabela():
     assert "_dialogo_oferta" in fonte_lista
     assert "st.columns(3" in fonte_cards
     assert "border=True" in fonte_cards
-    assert "BOTAO_DETALHES" in fonte_cards
+    assert "rotulo_acessivel_detalhes" in fonte_cards
+    assert "ESTIMATIVA_SOURCING" in inspect.getsource(dashboard._mostrar_margem)
+    assert 'st.expander("Transcrição do Criativo")' in fonte_dialogo
+    assert "_mostrar_margem" in fonte_dialogo
+    assert "_mostrar_margem" in fonte_cards
     assert "Assistir vídeo" not in fonte_dialogo
     assert "st.video" in fonte_dialogo
     assert "width=LARGURA_VIDEO" in fonte_dialogo
