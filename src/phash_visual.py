@@ -2,7 +2,7 @@
 
 import math
 import shutil
-import subprocess
+import subprocess  # nosec B404
 
 TAMANHO = 32
 _BAIXA_FREQUENCIA = 8
@@ -76,7 +76,8 @@ class CapturaQuadro:
         executavel = shutil.which("ffmpeg")
         if not executavel:
             return
-        self._processo = subprocess.Popen(
+        # O executável vem do PATH e os argumentos são constantes. O vídeo entra só pelo stdin.
+        self._processo = subprocess.Popen(  # nosec B603
             [
                 executavel,
                 "-v",
