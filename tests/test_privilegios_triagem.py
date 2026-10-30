@@ -41,8 +41,27 @@ def test_pipeline_atualiza_por_coluna_e_painel_le_tabela_a_tabela():
             "angulos_alternativos",
         ):
             assert coluna in bloco
-        for proibida in ("plataforma", "custo_tokens_ia", "engajamento_reacoes", "url_destino"):
+        for proibida in ("plataforma", "engajamento_reacoes", "url_destino"):
             assert proibida not in bloco
+
+    bloco_antigo = _bloco_update(migracao)
+    assert "custo_tokens_ia" not in bloco_antigo
+    bloco_pipeline = _bloco_update(pipeline)
+    for coluna in ("custo_tokens_ia", "modelo_ia", "versao_preco_ia", "analise_concluida_em"):
+        assert coluna in bloco_pipeline
+    mlops = (RAIZ / "infra/migrations/017_custo_modelo_e_vetor_mensal.sql").read_text(encoding="utf-8")
+    assert "GRANT UPDATE (" in mlops
+    assert "custo_tokens_ia" in mlops
+    assert "PARTITION BY RANGE (mes_captura)" in mlops
+    assert "DROP INDEX IF EXISTS idx_ofertas_embedding" in mlops
+    assert "idx_oferta_vetor_embedding" in mlops
+    assert "GRANT SELECT ON TABLE oferta_vetor TO streamlit_readonly" in mlops
+    assert "GRANT SELECT ON TABLE oferta_vetor TO streamlit_readonly" in painel
+    assert "GRANT SELECT ON TABLE preco_modelo_ia TO pipeline_writer" in pipeline
+    init_db = (RAIZ / "infra/init-db.sql").read_text(encoding="utf-8")
+    assert "USING hnsw (embedding_analise" not in init_db
+    assert "USING hnsw (embedding vector_cosine_ops)" in init_db
+    assert "PARTITION BY RANGE (mes_captura)" in init_db
 
     assert "GRANT SELECT, INSERT, UPDATE ON TABLE ofertas" not in pipeline
     assert "REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM streamlit_readonly" in painel

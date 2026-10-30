@@ -33,4 +33,14 @@ GRANT CONNECT ON DATABASE :"dbname" TO lifecycle_writer;
 GRANT USAGE ON SCHEMA public TO lifecycle_writer;
 GRANT SELECT, DELETE ON TABLE ofertas TO lifecycle_writer;
 GRANT UPDATE (processamento_token, score, fadiga_dias) ON TABLE ofertas TO lifecycle_writer;
+
+DO $$
+BEGIN
+  IF to_regprocedure('public.remover_oferta_vetor()') IS NOT NULL THEN
+    GRANT EXECUTE ON FUNCTION remover_oferta_vetor() TO lifecycle_writer;
+  END IF;
+  IF to_regprocedure('public.mes_captura_oferta(timestamptz)') IS NOT NULL THEN
+    GRANT EXECUTE ON FUNCTION mes_captura_oferta(TIMESTAMPTZ) TO lifecycle_writer;
+  END IF;
+END $$;
 SQL

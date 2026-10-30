@@ -32,7 +32,7 @@ $$;
 GRANT CONNECT ON DATABASE :"dbname" TO pipeline_writer;
 GRANT USAGE ON SCHEMA public TO pipeline_writer;
 -- DELETE não é concedido: qualification/IA não apagam ofertas (ver lifecycle_writer).
--- UPDATE é por coluna: o papel não reescreve id, url, plataforma nem custo.
+-- UPDATE é por coluna: o papel não reescreve id, url nem plataforma.
 GRANT SELECT, INSERT ON TABLE ofertas TO pipeline_writer;
 REVOKE UPDATE ON TABLE ofertas FROM pipeline_writer;
 REVOKE DELETE ON TABLE ofertas FROM pipeline_writer;
@@ -59,6 +59,10 @@ GRANT UPDATE (
     angulos_alternativos,
     embedding_analise,
     embedding_texto_hash,
+    custo_tokens_ia,
+    modelo_ia,
+    versao_preco_ia,
+    analise_concluida_em,
     tokens_prompt_ia,
     tokens_saida_ia,
     dados_comerciais_ausentes,
@@ -68,4 +72,17 @@ GRANT UPDATE (
     falhas_ia,
     falhas_ia_em
 ) ON TABLE ofertas TO pipeline_writer;
+
+DO $$
+BEGIN
+  IF to_regclass('public.preco_modelo_ia') IS NOT NULL THEN
+    GRANT SELECT ON TABLE preco_modelo_ia TO pipeline_writer;
+  END IF;
+  IF to_regprocedure('public.sincronizar_oferta_vetor()') IS NOT NULL THEN
+    GRANT EXECUTE ON FUNCTION sincronizar_oferta_vetor() TO pipeline_writer;
+  END IF;
+  IF to_regprocedure('public.mes_captura_oferta(timestamptz)') IS NOT NULL THEN
+    GRANT EXECUTE ON FUNCTION mes_captura_oferta(TIMESTAMPTZ) TO pipeline_writer;
+  END IF;
+END $$;
 SQL

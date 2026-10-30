@@ -97,11 +97,11 @@ OFERTAS_RECENTES_CURSOR_SQL = (
 OFERTAS_BUSCA_SQL = (
     f"\n    SELECT {COLUNAS_OFERTA},"  # nosec B608
     """
-           embedding_analise <=> %s::vector AS distancia
+           vetor.embedding <=> %s::vector AS distancia
     FROM ofertas
+    JOIN oferta_vetor AS vetor ON vetor.oferta_id = ofertas.id
     WHERE status_qualificacao = 'concluido'
-      AND embedding_analise IS NOT NULL
-    ORDER BY embedding_analise <=> %s::vector, id
+    ORDER BY vetor.embedding <=> %s::vector, ofertas.id
     LIMIT %s
     """
 )
@@ -109,12 +109,12 @@ OFERTAS_BUSCA_SQL = (
 OFERTAS_BUSCA_CURSOR_SQL = (
     f"\n    SELECT {COLUNAS_OFERTA},"  # nosec B608
     """
-           embedding_analise <=> %s::vector AS distancia
+           vetor.embedding <=> %s::vector AS distancia
     FROM ofertas
+    JOIN oferta_vetor AS vetor ON vetor.oferta_id = ofertas.id
     WHERE status_qualificacao = 'concluido'
-      AND embedding_analise IS NOT NULL
-      AND (embedding_analise <=> %s::vector, id) > (%s, %s)
-    ORDER BY embedding_analise <=> %s::vector, id
+      AND (vetor.embedding <=> %s::vector, ofertas.id) > (%s, %s)
+    ORDER BY vetor.embedding <=> %s::vector, ofertas.id
     LIMIT %s
     """
 )
@@ -678,6 +678,20 @@ def _opcoes_filtro(nichos: list[str]) -> list[str]:
     return [FILTRO_TODOS, *nomes, FILTRO_NOTA]
 
 
+def _vetor_reutilizavel(frase: str) -> list[float] | None:
+    """A página seguinte e a mesma frase usam o vetor já pago nesta sessão."""
+    if frase != st.session_state.get("ofertas_frase"):
+        return None
+    vetor = st.session_state.get("ofertas_vetor")
+    if not isinstance(vetor, list) or len(vetor) != DIMENSAO_EMBEDDING:
+        return None
+    if not all(isinstance(valor, (int, float)) and not isinstance(valor, bool) for valor in vetor):
+        return None
+    if not all(math.isfinite(float(valor)) for valor in vetor):
+        return None
+    return [float(valor) for valor in vetor]
+
+
 def _aplicar_busca(frase: str, agora: float | None = None) -> None:
     normalizada = _normalizar_frase_busca(frase)
     nicho = nicho_canonico(normalizada)
@@ -689,6 +703,11 @@ def _aplicar_busca(frase: str, agora: float | None = None) -> None:
     if not normalizada:
         st.session_state["busca_limitada"] = False
         _reiniciar_listagem()
+        return
+    reutilizado = _vetor_reutilizavel(normalizada)
+    if reutilizado is not None:
+        st.session_state["busca_limitada"] = False
+        _reiniciar_listagem(normalizada, reutilizado)
         return
     instante = time.monotonic() if agora is None else agora
     permitido, historico = _avaliar_cota_embedding(
@@ -834,6 +853,58 @@ FROM ofertas
 WHERE data_ultima_captura >= date_trunc('month', CURRENT_TIMESTAMP)
 """
 
+SQL_OPERACAO_P95 = """
+SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY custo_tokens_ia)
+           FILTER (WHERE analise_concluida_em >= CURRENT_TIMESTAMP - INTERVAL '7 days') AS p95_recente,
+       percentile_cont(0.95) WITHIN GROUP (ORDER BY custo_tokens_ia)
+           FILTER (
+               WHERE analise_concluida_em < CURRENT_TIMESTAMP - INTERVAL '7 days'
+                 AND analise_concluida_em >= CURRENT_TIMESTAMP - INTERVAL '14 days'
+           ) AS p95_anterior
+FROM ofertas
+WHERE custo_tokens_ia IS NOT NULL
+  AND analise_concluida_em >= CURRENT_TIMESTAMP - INTERVAL '14 days'
+"""
+
+SQL_OPERACAO_PRECOS = """
+SELECT modelo_ia, versao_preco_ia, COUNT(*) AS total
+FROM ofertas
+WHERE analise_concluida_em >= CURRENT_TIMESTAMP - INTERVAL '14 days'
+  AND modelo_ia IS NOT NULL
+GROUP BY modelo_ia, versao_preco_ia
+ORDER BY modelo_ia, versao_preco_ia
+"""
+
+
+def texto_p95_usd(valor: object) -> str:
+    if valor is None:
+        return "sem amostras"
+    quantizado = Decimal(str(valor)).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    return f"US$ {quantizado}"
+
+
+def texto_comparacao_p95(recente: object, anterior: object) -> str | None:
+    if recente is None or anterior is None:
+        return None
+    delta = (Decimal(str(recente)) - Decimal(str(anterior))).quantize(
+        Decimal("0.000001"),
+        rounding=ROUND_HALF_UP,
+    )
+    return f"Diferença do p95: {delta:+.6f} USD."
+
+
+def texto_precos_janela(linhas: list[dict]) -> str | None:
+    partes = []
+    for linha in linhas:
+        modelo = linha.get("modelo_ia")
+        versao = linha.get("versao_preco_ia") or "sem versão"
+        total = int(linha.get("total") or 0)
+        if modelo:
+            partes.append(f"{modelo} {versao} ({total})")
+    if not partes:
+        return None
+    return "Preços usados nestes 14 dias: " + ", ".join(partes) + "."
+
 
 def _triagem_por_oferta(conn, ofertas: list[dict]) -> dict[int, str]:
     ids = [oferta["id"] for oferta in ofertas if oferta.get("id") is not None]
@@ -908,7 +979,9 @@ def _aplicar_lote(conn, ofertas: list[dict]) -> bool:
 
 def _painel_operacao(conn) -> None:
     st.header("Operação do pipeline")
-    st.caption("Contagens da fila e tokens de IA gravados neste mês.")
+    st.caption(
+        "Contagens da fila, tokens de IA deste mês e o p95 do custo nos últimos 7 dias " "contra os 7 dias anteriores."
+    )
     with conn.cursor() as cur:
         cur.execute(SQL_OPERACAO_STATUS)
         status = cur.fetchall()
@@ -916,6 +989,10 @@ def _painel_operacao(conn) -> None:
         falhas = cur.fetchone()
         cur.execute(SQL_OPERACAO_TOKENS)
         tokens = cur.fetchone()
+        cur.execute(SQL_OPERACAO_P95)
+        p95 = cur.fetchone() or {}
+        cur.execute(SQL_OPERACAO_PRECOS)
+        precos = cur.fetchall()
     if status:
         colunas = st.columns(len(status))
         for coluna, linha in zip(colunas, status, strict=False):
@@ -927,6 +1004,19 @@ def _painel_operacao(conn) -> None:
     prompt = int((tokens or {}).get("prompt") or 0)
     saida = int((tokens or {}).get("saida") or 0)
     st.caption(f"Tokens neste mês: {prompt} de prompt e {saida} de resposta.")
+    recente = p95.get("p95_recente")
+    anterior = p95.get("p95_anterior")
+    coluna_recente, coluna_anterior = st.columns(2)
+    with coluna_recente:
+        st.metric("p95 do custo de IA, 7 dias", texto_p95_usd(recente))
+    with coluna_anterior:
+        st.metric("p95 do custo de IA, 7 dias anteriores", texto_p95_usd(anterior))
+    comparacao = texto_comparacao_p95(recente, anterior)
+    if comparacao:
+        st.caption(comparacao)
+    precos_texto = texto_precos_janela(precos)
+    if precos_texto:
+        st.caption(precos_texto)
 
 
 def _titulo_lista(em_busca: bool) -> None:

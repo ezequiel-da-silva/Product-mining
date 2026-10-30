@@ -36,7 +36,8 @@ for file in \
   infra/migrations/013_privilegios_estreitos.sql \
   infra/migrations/014_preco_moeda.sql \
   infra/migrations/015_phash_perceptual.sql \
-  infra/migrations/016_fadiga_anuncio.sql
+  infra/migrations/016_fadiga_anuncio.sql \
+  infra/migrations/017_custo_modelo_e_vetor_mensal.sql
 do
   versao=$(basename "$file" .sql)
   applied=$(

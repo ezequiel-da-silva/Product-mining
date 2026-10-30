@@ -45,5 +45,27 @@ BEGIN
   IF to_regclass('public.triagem_oferta_id_seq') IS NOT NULL THEN
     GRANT USAGE, SELECT ON SEQUENCE triagem_oferta_id_seq TO streamlit_readonly;
   END IF;
+  IF to_regclass('public.preco_modelo_ia') IS NOT NULL THEN
+    GRANT SELECT ON TABLE preco_modelo_ia TO streamlit_readonly;
+  END IF;
+  IF to_regclass('public.oferta_vetor') IS NOT NULL THEN
+    GRANT SELECT ON TABLE oferta_vetor TO streamlit_readonly;
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  particao regclass;
+BEGIN
+  IF to_regclass('public.oferta_vetor') IS NULL THEN
+    RETURN;
+  END IF;
+  FOR particao IN
+    SELECT inhrelid
+    FROM pg_inherits
+    WHERE inhparent = 'public.oferta_vetor'::regclass
+  LOOP
+    EXECUTE format('GRANT SELECT ON TABLE %s TO streamlit_readonly', particao);
+  END LOOP;
 END $$;
 SQL

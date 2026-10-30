@@ -32,10 +32,14 @@ from src.dashboard import (
     PAGE_SIZE,
     PRECO_AUSENTE,
     ROTULOS_OFERTAS,
+    SQL_OPERACAO_P95,
+    SQL_OPERACAO_PRECOS,
+    SQL_OPERACAO_TOKENS,
     TITULO_OFERTAS_RECENTES,
     TITULO_PAINEL,
     _aplicar_busca,
     _avaliar_cota_embedding,
+    _carregar_proxima_pagina,
     _corpo_dialogo,
     _definir_triagem_lote,
     _descartar_credencial_na_url,
@@ -64,9 +68,12 @@ from src.dashboard import (
     similaridade_percentual,
     texto_bloqueio_cota,
     texto_comercial,
+    texto_comparacao_p95,
     texto_literal,
     texto_nota,
+    texto_p95_usd,
     texto_preco,
+    texto_precos_janela,
     texto_regiao_viva,
 )
 
@@ -288,7 +295,9 @@ def test_busca_vetorial_e_cursor_sao_parametrizados():
     consulta, parametros = cursor_db.execute.call_args.args
     assert "triagem.estado = 'descartada'" in consulta
     assert consulta.count("%s::vector") == 3
-    assert "embedding_analise <=>" in consulta
+    assert "JOIN oferta_vetor AS vetor" in consulta
+    assert "vetor.embedding <=>" in consulta
+    assert "embedding_analise <=>" not in consulta
     assert "OFFSET" not in consulta
     assert parametros[2:] == (0.25, 50, parametros[0], PAGE_SIZE + 1)
     assert parametros[0].startswith("[")
@@ -549,3 +558,77 @@ def test_atalho_do_card_focado_usa_s_d_e_t():
     assert "window.__atalhosTriagem" in html_atalho
     assert "textarea" in html_atalho
     assert "unsafe_allow_javascript=True" in inspect.getsource(dashboard._registrar_atalhos_triagem)
+
+
+def test_mesma_frase_reusa_o_vetor_sem_gastar_cota(monkeypatch):
+    import src.dashboard as dashboard
+
+    vetor = [0.3] * DIMENSAO_EMBEDDING
+    historico = [0.0] * LIMITE_EMBEDDING_POR_MINUTO
+    estado = {
+        "ofertas_frase": "pet shop",
+        "ofertas_vetor": list(vetor),
+        "embedding_buscas_em": list(historico),
+        "ofertas_modo": "busca",
+    }
+    monkeypatch.setattr(dashboard.st, "session_state", estado)
+    embedding = MagicMock()
+    monkeypatch.setattr(dashboard, "gerar_embedding_busca", embedding)
+
+    _aplicar_busca("  Pet Shop ", agora=10.0)
+
+    embedding.assert_not_called()
+    assert estado["embedding_buscas_em"] == historico
+    assert estado["busca_limitada"] is False
+    assert estado["ofertas_vetor"] == vetor
+    assert estado["ofertas_modo"] == "busca"
+    assert estado["ofertas_inicializadas"] is False
+
+
+def test_cursor_da_busca_reusa_o_vetor_sem_novo_embedding(monkeypatch):
+    import src.dashboard as dashboard
+
+    vetor = [0.2] * DIMENSAO_EMBEDDING
+    estado = {
+        "ofertas_modo": "busca",
+        "ofertas_frase": "pet shop",
+        "ofertas_vetor": vetor,
+        "ofertas_cursor": None,
+        "ofertas_resultados": [],
+        "ofertas_tem_mais": True,
+        "ofertas_inicializadas": False,
+    }
+    monkeypatch.setattr(dashboard.st, "session_state", estado)
+    embedding = MagicMock()
+    monkeypatch.setattr(dashboard, "gerar_embedding_busca", embedding)
+    linhas = [{"id": 1, "distancia": 0.1, "data_ultima_captura": None}]
+    conexao, cursor_db = _conexao_com_linhas(linhas)
+
+    _carregar_proxima_pagina(conexao, None)
+
+    embedding.assert_not_called()
+    consulta, parametros = cursor_db.execute.call_args.args
+    assert "JOIN oferta_vetor AS vetor" in consulta
+    assert parametros[0] == _vetor_para_pg_teste(vetor)
+    assert estado["ofertas_cursor"] == (0.1, 1)
+
+
+def _vetor_para_pg_teste(vetor):
+    return "[" + ",".join(format(valor, ".17g") for valor in vetor) + "]"
+
+
+def test_operacao_compara_p95_de_sete_dias_e_mantem_o_mes():
+    assert "percentile_cont(0.95)" in SQL_OPERACAO_P95
+    assert "INTERVAL '7 days'" in SQL_OPERACAO_P95
+    assert "INTERVAL '14 days'" in SQL_OPERACAO_P95
+    assert "analise_concluida_em" in SQL_OPERACAO_P95
+    assert "date_trunc('month', CURRENT_TIMESTAMP)" in SQL_OPERACAO_TOKENS
+    assert "modelo_ia" in SQL_OPERACAO_PRECOS
+    assert texto_p95_usd(None) == "sem amostras"
+    assert texto_p95_usd("0.00185") == "US$ 0.001850"
+    assert texto_comparacao_p95("0.002000", "0.001000") == "Diferença do p95: +0.001000 USD."
+    assert texto_comparacao_p95(None, "0.1") is None
+    assert (
+        texto_precos_janela([{"modelo_ia": "gemini-3.8-flash", "versao_preco_ia": "2026-10", "total": 2}])
+        == "Preços usados nestes 14 dias: gemini-3.8-flash 2026-10 (2)."
+    )

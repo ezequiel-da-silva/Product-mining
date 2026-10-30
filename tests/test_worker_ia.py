@@ -41,6 +41,22 @@ with (
 VIDEO_R2_URL = "https://account.r2.cloudflarestorage.com/video.mp4"
 
 
+def _assert_dead_letter(send_task, *, com_analise: bool) -> None:
+    send_task.assert_called_once()
+    assert send_task.call_args.args[0] == "src.worker_ia.reprocessar_falha_definitiva"
+    assert send_task.call_args.kwargs["queue"] == "ai_dead_letter"
+    payload = send_task.call_args.kwargs["kwargs"]
+    assert payload["oferta_id"] == 7
+    assert payload["video_url_r2"] == VIDEO_R2_URL
+    assert payload["ad_copy_texto"] == "copy"
+    assert "erro" in payload
+    if com_analise:
+        assert payload["analise"]["nicho"] == "Saúde e Beleza"
+        assert payload["analise"]["gancho_3s"] == "Abertura rápida"
+    else:
+        assert payload["analise"] is None
+
+
 def _dns(ip: str):
     def resolve(*_args, **_kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443))]
@@ -119,8 +135,14 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
     assert mock_cursor.execute.called, "O cursor.execute não foi chamado."
     assert mock_conn.commit.called, "O conn.commit não foi chamado."
 
-    # Valida se os argumentos passados para a query estão corretos
-    args_chamada = mock_cursor.execute.call_args_list[0].args
+    # A consulta de preço antecede o UPDATE. Os parâmetros ficam na gravação.
+    chamadas_update = [
+        chamada.args
+        for chamada in mock_cursor.execute.call_args_list
+        if "custo_tokens_ia = %(custo)s" in chamada.args[0]
+    ]
+    assert len(chamadas_update) == 1
+    args_chamada = chamadas_update[0]
     parametros_sql = args_chamada[1]
 
     assert parametros_sql["id"] == 42
@@ -136,6 +158,11 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
     assert parametros_sql["bonus"] == 25
     assert parametros_sql["teto"] == 100
     assert "processamento_token = %(token)s" in args_chamada[0]
+    assert "custo_tokens_ia = %(custo)s" in args_chamada[0]
+    assert "analise_concluida_em = CURRENT_TIMESTAMP" in args_chamada[0]
+    assert parametros_sql["custo"] is None
+    assert parametros_sql["modelo"] == "gemini-3.8-flash"
+    assert parametros_sql["versao_preco"] is None
 
 
 @patch("src.worker_ia.requests.get")
@@ -272,7 +299,7 @@ def test_embedding_com_tamanho_errado_vai_para_dlq(monkeypatch):
 
     assert result == {"status": "dead_letter", "oferta_id": 7}
     task_self.retry.assert_not_called()
-    send_task.assert_not_called()
+    _assert_dead_letter(send_task, com_analise=True)
 
 
 def test_falha_no_embedding_apos_geracao_retry_leva_a_analise(monkeypatch):
@@ -456,7 +483,7 @@ def test_value_error_vai_para_dlq_sem_retry(monkeypatch):
     assert result == {"status": "dead_letter", "oferta_id": 7}
     worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", True)
     task_self.retry.assert_not_called()
-    send_task.assert_not_called()
+    _assert_dead_letter(send_task, com_analise=False)
 
 
 def test_client_error_400_vai_para_dlq_sem_retry(monkeypatch):
@@ -483,7 +510,7 @@ def test_client_error_400_vai_para_dlq_sem_retry(monkeypatch):
 
     assert result == {"status": "dead_letter", "oferta_id": 7}
     task_self.retry.assert_not_called()
-    send_task.assert_not_called()
+    _assert_dead_letter(send_task, com_analise=False)
 
 
 def test_client_error_429_faz_retry(monkeypatch):
@@ -588,6 +615,8 @@ def test_client_error_400_sem_api_key_continua_permanente(monkeypatch):
 
     monkeypatch.setattr(worker, "_baixar_video_temporario", _falha)
     monkeypatch.setattr(worker, "_liberar_reserva_erro", MagicMock())
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
     task_self = MagicMock()
     task_self.request.retries = 0
     task_self.max_retries = 3
@@ -597,6 +626,7 @@ def test_client_error_400_sem_api_key_continua_permanente(monkeypatch):
     assert result == {"status": "dead_letter", "oferta_id": 7}
     worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", True)
     task_self.retry.assert_not_called()
+    _assert_dead_letter(send_task, com_analise=False)
 
 
 def test_ultima_tentativa_transitoria_vai_para_dlq(monkeypatch):
@@ -624,7 +654,7 @@ def test_ultima_tentativa_transitoria_vai_para_dlq(monkeypatch):
     assert result == {"status": "dead_letter", "oferta_id": 7}
     worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", True)
     task_self.retry.assert_not_called()
-    send_task.assert_not_called()
+    _assert_dead_letter(send_task, com_analise=False)
 
 
 def test_download_rejeita_http():
@@ -731,6 +761,176 @@ def test_download_de_chave_usa_a_url_assinada_na_hora(monkeypatch, tmp_path):
 
     assert get_video.call_args.args[0] == assinada
     assert caminho.startswith(str(tmp_path))
+
+
+def test_custo_soma_preco_versionado_do_modelo_e_do_embedding():
+    from decimal import Decimal
+
+    import src.worker_ia as worker
+
+    preco_analise = {
+        "versao": "2026-10",
+        "usd_por_milhao_prompt": Decimal("0.30"),
+        "usd_por_milhao_saida": Decimal("2.50"),
+    }
+    preco_embedding = {
+        "versao": "2026-10",
+        "usd_por_milhao_prompt": Decimal("0.15"),
+        "usd_por_milhao_saida": Decimal("0"),
+    }
+
+    custo, versao = worker.custo_tokens_usd(
+        {"prompt": 1000, "saida": 500, "embedding": 2000},
+        preco_analise,
+        preco_embedding,
+    )
+
+    assert custo == Decimal("0.001850")
+    assert versao == "2026-10"
+    assert worker.custo_tokens_usd({"prompt": 10}, None, preco_embedding) == (None, None)
+    sem_tokens, versao_sem_tokens = worker.custo_tokens_usd({}, preco_analise, None)
+    assert sem_tokens is None
+    assert versao_sem_tokens == "2026-10"
+
+
+def test_persistir_grava_custo_quando_ha_preco_vigente(monkeypatch):
+    from decimal import Decimal
+
+    import src.worker_ia as worker
+
+    cursor = MagicMock()
+    cursor.rowcount = 1
+    cursor.fetchall.return_value = []
+    cursor.fetchone.side_effect = [
+        {
+            "versao": "2026-10",
+            "usd_por_milhao_prompt": Decimal("0.30"),
+            "usd_por_milhao_saida": Decimal("2.50"),
+        },
+        {
+            "versao": "2026-10",
+            "usd_por_milhao_prompt": Decimal("0.15"),
+            "usd_por_milhao_saida": Decimal("0"),
+        },
+    ]
+    _pool(monkeypatch, cursor)
+
+    assert worker.persistir_resultado_ia(
+        42,
+        _dados_analise() | {"preco_oferta_estimado": 10, "preco_moeda": "USD"},
+        [0.1, 0.2, 0.3],
+        "token-1",
+        {"prompt": 1000, "saida": 500, "embedding": 2000},
+    )
+
+    update = next(chamada.args for chamada in cursor.execute.call_args_list if "UPDATE ofertas" in chamada.args[0])
+    assert update[1]["custo"] == Decimal("0.001850")
+    assert update[1]["versao_preco"] == "2026-10"
+    assert update[1]["modelo"] == "gemini-3.8-flash"
+    assert "preco_modelo_ia" in cursor.execute.call_args_list[0].args[0]
+
+
+def test_reprocesso_da_dead_letter_reusa_analise_e_nao_republica(monkeypatch):
+    import src.worker_ia as worker
+
+    monkeypatch.setattr(
+        worker,
+        "_reservar_oferta_para_processamento",
+        lambda _oferta_id: ("reserved", 0, "token-1"),
+    )
+    baixar = MagicMock()
+    upload = MagicMock()
+    gerar = MagicMock()
+    monkeypatch.setattr(worker, "_baixar_video_temporario", baixar)
+    monkeypatch.setattr(worker.cliente_ia.files, "upload", upload)
+    monkeypatch.setattr(worker.cliente_ia.models, "generate_content", gerar)
+    monkeypatch.setattr(worker, "_obter_vetor_embedding", lambda *_args: [0.1] * 768)
+    persist = MagicMock(return_value=True)
+    monkeypatch.setattr(worker, "persistir_resultado_ia", persist)
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+    worker._tokens_embedding_pendentes["valor"] = None
+
+    result = worker.reprocessar_falha_definitiva(
+        MagicMock(),
+        7,
+        VIDEO_R2_URL,
+        "copy",
+        analise=_dados_analise(),
+        uso_tokens={"prompt": 10, "saida": 2},
+        erro="ValueError: vídeo inválido",
+    )
+
+    assert result["nicho"] == "Saúde e Beleza"
+    baixar.assert_not_called()
+    upload.assert_not_called()
+    gerar.assert_not_called()
+    send_task.assert_not_called()
+    assert persist.call_args.args[4] == {"prompt": 10, "saida": 2}
+
+
+def test_reprocesso_definitivo_nao_devolve_outra_mensagem(monkeypatch):
+    import src.worker_ia as worker
+
+    monkeypatch.setattr(
+        worker,
+        "_reservar_oferta_para_processamento",
+        lambda _oferta_id: ("reserved", 0, "token-1"),
+    )
+
+    def _falha(_url):
+        raise ValueError("vídeo inválido")
+
+    monkeypatch.setattr(worker, "_baixar_video_temporario", _falha)
+    monkeypatch.setattr(worker, "_liberar_reserva_erro", MagicMock())
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+    task_self = MagicMock()
+    task_self.request.retries = 0
+    task_self.max_retries = 3
+
+    result = worker.reprocessar_falha_definitiva(
+        task_self,
+        7,
+        VIDEO_R2_URL,
+        "copy",
+        analise=None,
+        erro="ValueError: anterior",
+    )
+
+    assert result == {"status": "dead_letter", "oferta_id": 7}
+    send_task.assert_not_called()
+    task_self.retry.assert_not_called()
+
+
+def test_dead_letter_tem_fila_propria_fora_do_worker_padrao():
+    from pathlib import Path
+
+    from core.celery_app import app
+
+    assert app.conf.task_routes["src.worker_ia.reprocessar_falha_definitiva"]["queue"] == "ai_dead_letter"
+    assert "ai_dead_letter" in {fila.name for fila in app.conf.task_queues}
+    compose = Path(__file__).resolve().parents[1].joinpath("docker-compose.yml").read_text(encoding="utf-8")
+    assert "-Q ai_multimodal_queue" in compose
+    assert "ai_dead_letter" not in compose.split("-Q ai_multimodal_queue", 1)[1].split("\n", 1)[0]
+
+
+def test_embedding_novo_guarda_tokens_para_o_custo(monkeypatch):
+    import src.worker_ia as worker
+
+    cursor = MagicMock()
+    cursor.fetchone.return_value = None
+    _pool(monkeypatch, cursor)
+    resposta = MagicMock()
+    resposta.embeddings = [MagicMock(values=[0.2] * 768)]
+    resposta.usage_metadata.prompt_token_count = 320
+    monkeypatch.setattr(worker.cliente_ia.models, "embed_content", lambda **_kwargs: resposta)
+
+    vetor = worker._obter_vetor_embedding(7, _dados_analise())
+
+    assert vetor == [0.2] * 768
+    assert worker._consumir_tokens_embedding() == 320
+    assert worker._consumir_tokens_embedding() is None
 
 
 def test_chave_sem_credencial_nao_baixa(monkeypatch):

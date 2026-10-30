@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import uuid
+from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -89,6 +90,11 @@ if os.path.exists(PERSONA_PATH):
 MODELO_ANALISE = "gemini-3.8-flash"
 MODELO_EMBEDDING = "gemini-embedding-2"
 DIMENSAO_EMBEDDING = 768
+FILA_DEAD_LETTER = "ai_dead_letter"
+TAREFA_DEAD_LETTER = "src.worker_ia.reprocessar_falha_definitiva"
+MILHAO_TOKENS = Decimal(1_000_000)
+PRECISAO_CUSTO = Decimal("0.000001")
+_tokens_embedding_pendentes: dict[str, int | None] = {"valor": None}
 JANELA_VIDEO_FIM = "30s"
 LIMITE_COPY_PROMPT = 2000
 
@@ -207,6 +213,56 @@ RETURNING irma.id, irma.url_destino;
 """
 
 
+def _componente_custo(tokens: object, usd_por_milhao: object) -> Decimal | None:
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0 or usd_por_milhao is None:
+        return None
+    return (Decimal(tokens) * Decimal(str(usd_por_milhao))) / MILHAO_TOKENS
+
+
+def custo_tokens_usd(
+    uso: dict | None,
+    preco_analise: dict | None,
+    preco_embedding: dict | None,
+) -> tuple[Decimal | None, str | None]:
+    """Soma o preço vigente do modelo de análise e, se houver, o do embedding."""
+    if not preco_analise:
+        return None, None
+    partes = [
+        _componente_custo(uso.get("prompt") if uso else None, preco_analise.get("usd_por_milhao_prompt")),
+        _componente_custo(uso.get("saida") if uso else None, preco_analise.get("usd_por_milhao_saida")),
+    ]
+    if preco_embedding:
+        partes.append(
+            _componente_custo(
+                uso.get("embedding") if uso else None,
+                preco_embedding.get("usd_por_milhao_prompt"),
+            )
+        )
+    conhecidas = [parte for parte in partes if parte is not None]
+    versao = preco_analise.get("versao")
+    if not conhecidas:
+        return None, versao if isinstance(versao, str) else None
+    total = sum(conhecidas, Decimal(0)).quantize(PRECISAO_CUSTO, rounding=ROUND_HALF_UP)
+    return total, versao if isinstance(versao, str) else None
+
+
+def _preco_vigente(cur, modelo: str) -> dict | None:
+    cur.execute(
+        """
+        SELECT versao, usd_por_milhao_prompt, usd_por_milhao_saida
+        FROM preco_modelo_ia
+        WHERE modelo = %s
+        ORDER BY vigente_desde DESC, versao DESC
+        LIMIT 1
+        """,
+        (modelo,),
+    )
+    linha = cur.fetchone()
+    if not isinstance(linha, dict):
+        return None
+    return linha
+
+
 def persistir_resultado_ia(
     oferta_id: int,
     dados: dict,
@@ -225,6 +281,15 @@ def persistir_resultado_ia(
 
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
+            preco_analise = _preco_vigente(cur, MODELO_ANALISE)
+            preco_embedding = _preco_vigente(cur, MODELO_EMBEDDING)
+            custo, versao_preco = custo_tokens_usd(uso_tokens, preco_analise, preco_embedding)
+            if preco_analise is None:
+                logger.warning(
+                    "[Oferta %s] Análise gravada sem preço vigente para %s.",
+                    oferta_id,
+                    MODELO_ANALISE,
+                )
             cur.execute(
                 """
                 UPDATE ofertas
@@ -242,6 +307,10 @@ def persistir_resultado_ia(
                     embedding_texto_hash = %(embedding_texto_hash)s,
                     tokens_prompt_ia = %(tokens_prompt)s,
                     tokens_saida_ia = %(tokens_saida)s,
+                    custo_tokens_ia = %(custo)s,
+                    modelo_ia = %(modelo)s,
+                    versao_preco_ia = %(versao_preco)s,
+                    analise_concluida_em = CURRENT_TIMESTAMP,
                     score = CASE
                         WHEN status_qualificacao != 'concluido' THEN LEAST(score + %(bonus)s, %(teto)s)
                         ELSE score
@@ -268,6 +337,9 @@ def persistir_resultado_ia(
                     "embedding_texto_hash": _hash_texto_embedding(_texto_embedding(dados)),
                     "tokens_prompt": uso_tokens.get("prompt"),
                     "tokens_saida": uso_tokens.get("saida"),
+                    "custo": custo,
+                    "modelo": MODELO_ANALISE,
+                    "versao_preco": versao_preco,
                     "token": token,
                     "id": oferta_id,
                     "bonus": BONUS_ANALISE_IA,
@@ -487,7 +559,34 @@ def _embedding_em_cache(texto_hash: str, oferta_id: int) -> list[float] | None:
     return _vetor_de_texto(row["embedding"])
 
 
+def _registrar_tokens_embedding(valor: object) -> None:
+    if isinstance(valor, bool) or not isinstance(valor, int) or valor < 0:
+        _tokens_embedding_pendentes["valor"] = None
+        return
+    _tokens_embedding_pendentes["valor"] = valor
+
+
+def _consumir_tokens_embedding() -> int | None:
+    valor = _tokens_embedding_pendentes["valor"]
+    _tokens_embedding_pendentes["valor"] = None
+    return valor
+
+
+def _tokens_prompt_embedding(resposta) -> int | None:
+    uso = getattr(resposta, "usage_metadata", None)
+    if uso is None and isinstance(resposta, dict):
+        uso = resposta.get("usage_metadata")
+    if isinstance(uso, dict):
+        total = uso.get("prompt_token_count")
+    else:
+        total = getattr(uso, "prompt_token_count", None) if uso is not None else None
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        return None
+    return total
+
+
 def _obter_vetor_embedding(oferta_id: int, dados: dict) -> list[float]:
+    _registrar_tokens_embedding(None)
     texto_hash = _hash_texto_embedding(_texto_embedding(dados))
     vetor = _embedding_em_cache(texto_hash, oferta_id)
     if vetor is not None:
@@ -502,6 +601,7 @@ def _obter_vetor_embedding(oferta_id: int, dados: dict) -> list[float]:
             output_dimensionality=DIMENSAO_EMBEDDING,
         ),
     )
+    _registrar_tokens_embedding(_tokens_prompt_embedding(embedding_res))
     return _vetor_embedding(embedding_res)
 
 
@@ -542,6 +642,39 @@ def _erro_configuracao(erro: Exception) -> bool:
     return erro.code == 400 and ("API_KEY" in texto or "API KEY" in texto)
 
 
+def _kwargs_retry(task, analise: dict | None, uso_tokens: dict | None) -> dict:
+    if not analise:
+        return {}
+    atuais = task.request.kwargs
+    novos = dict(atuais) if isinstance(atuais, dict) else {}
+    novos["analise"] = analise
+    novos["uso_tokens"] = uso_tokens
+    return {"kwargs": novos}
+
+
+def _publicar_falha_definitiva(
+    oferta_id: int,
+    video_url_r2: str | None,
+    ad_copy_texto: str | None,
+    analise: dict | None,
+    uso_tokens: dict | None,
+    erro: Exception,
+) -> None:
+    """Entrega a falha definitiva com a análise já paga, para reprocessar sem novo upload."""
+    app.send_task(
+        TAREFA_DEAD_LETTER,
+        kwargs={
+            "oferta_id": oferta_id,
+            "video_url_r2": video_url_r2,
+            "ad_copy_texto": ad_copy_texto,
+            "analise": analise,
+            "uso_tokens": uso_tokens,
+            "erro": f"{type(erro).__name__}: {erro}"[:500],
+        },
+        queue=FILA_DEAD_LETTER,
+    )
+
+
 def _tratar_falha_processamento(
     task,
     oferta_id: int,
@@ -549,6 +682,9 @@ def _tratar_falha_processamento(
     erro: Exception,
     analise: dict | None = None,
     uso_tokens: dict | None = None,
+    video_url_r2: str | None = None,
+    ad_copy_texto: str | None = None,
+    republicar: bool = True,
 ) -> dict:
     configuracao = _erro_configuracao(erro)
     definitiva = not configuracao and (_erro_permanente(erro) or task.request.retries >= task.max_retries)
@@ -568,12 +704,37 @@ def _tratar_falha_processamento(
         )
         return {"status": "config_error", "oferta_id": oferta_id}
     if definitiva:
-        logger.error("[Oferta %s] Falha permanente (%s): %s", oferta_id, type(erro).__name__, erro)
+        if republicar:
+            _publicar_falha_definitiva(
+                oferta_id,
+                video_url_r2,
+                ad_copy_texto,
+                analise,
+                uso_tokens,
+                erro,
+            )
+            logger.error(
+                "[Oferta %s] Falha permanente publicada em %s (%s): %s",
+                oferta_id,
+                FILA_DEAD_LETTER,
+                type(erro).__name__,
+                erro,
+            )
+        else:
+            logger.error(
+                "[Oferta %s] Reprocesso da dead letter falhou de forma definitiva (%s): %s",
+                oferta_id,
+                type(erro).__name__,
+                erro,
+            )
         return {"status": "dead_letter", "oferta_id": oferta_id}
 
     logger.error("[Oferta %s] Erro: %s. Executando retry...", oferta_id, erro)
-    retry_kwargs = {"kwargs": {"analise": analise, "uso_tokens": uso_tokens}} if analise else {}
-    raise task.retry(exc=erro, countdown=15 * (2**task.request.retries), **retry_kwargs) from erro
+    raise task.retry(
+        exc=erro,
+        countdown=15 * (2**task.request.retries),
+        **_kwargs_retry(task, analise, uso_tokens),
+    ) from erro
 
 
 def _parte_video(video_file):
@@ -646,38 +807,40 @@ def _obter_prompt_final(ad_copy_texto: str) -> str:
     """
 
 
-@app.task(bind=True, max_retries=3, rate_limit="10/m")
-def processar_anuncio_multimodal(
-    self,
+def _token_da_reserva(task, oferta_id: int) -> str | dict:
+    status, restante, token = _reservar_oferta_para_processamento(oferta_id)
+    if status == "completed":
+        logger.info("[Oferta %s] Tarefa ignorada: oferta já concluída anteriormente.", oferta_id)
+        return {"status": "already_processed", "oferta_id": oferta_id}
+    if status == "missing":
+        logger.warning("[Oferta %s] Tarefa ignorada: registro não encontrado.", oferta_id)
+        return {"status": "not_found", "oferta_id": oferta_id}
+    if status == "processing":
+        logger.info(
+            "[Oferta %s] Outra execução mantém a reserva; nova tentativa em %s segundos.",
+            oferta_id,
+            restante,
+        )
+        raise task.retry(countdown=max(1, restante), max_retries=1000)
+    if status != "reserved" or token is None:
+        raise RuntimeError(f"Não foi possível reservar a oferta {oferta_id}: {status}.")
+    return token
+
+
+def _processar_anuncio(
+    task,
     oferta_id: int,
     video_url_r2: str,
     ad_copy_texto: str,
     analise: dict | None = None,
     uso_tokens: dict | None = None,
+    republicar_falha: bool = True,
 ):
     """Consome a mídia permanente do R2, processa com Gemini e indexa no pgvector[cite: 1]."""
-    reservation_status, lease_remaining, lease_token = _reservar_oferta_para_processamento(oferta_id)
-    if reservation_status == "completed":
-        logger.info(f"[Oferta {oferta_id}] Tarefa ignorada: oferta já concluída anteriormente.")
-        return {"status": "already_processed", "oferta_id": oferta_id}
-
-    if reservation_status == "missing":
-        logger.warning("[Oferta %s] Tarefa ignorada: registro não encontrado.", oferta_id)
-        return {"status": "not_found", "oferta_id": oferta_id}
-
-    if reservation_status == "processing":
-        logger.info(
-            "[Oferta %s] Outra execução mantém a reserva; nova tentativa em %s segundos.",
-            oferta_id,
-            lease_remaining,
-        )
-        raise self.retry(
-            countdown=max(1, lease_remaining),
-            max_retries=1000,
-        )
-
-    if reservation_status != "reserved" or lease_token is None:
-        raise RuntimeError(f"Não foi possível reservar a oferta {oferta_id}: {reservation_status}.")
+    reserva = _token_da_reserva(task, oferta_id)
+    if isinstance(reserva, dict):
+        return reserva
+    lease_token = reserva
 
     video_file = None
     tmp_path = None
@@ -705,6 +868,10 @@ def processar_anuncio_multimodal(
             resultado_validado = AnaliseAnuncioSchema(**_enquadrar_nicho(dados_extraidos))
 
         vetor_embedding = _obter_vetor_embedding(oferta_id, resultado_validado.model_dump())
+        tokens_embedding = _consumir_tokens_embedding()
+        if tokens_embedding is not None:
+            uso_tokens = dict(uso_tokens or {})
+            uso_tokens["embedding"] = tokens_embedding
 
         persisted = persistir_resultado_ia(
             oferta_id,
@@ -725,7 +892,17 @@ def processar_anuncio_multimodal(
 
     except Exception as e:
         paga = resultado_validado.model_dump() if resultado_validado else None
-        return _tratar_falha_processamento(self, oferta_id, lease_token, e, paga, uso_tokens)
+        return _tratar_falha_processamento(
+            task,
+            oferta_id,
+            lease_token,
+            e,
+            paga,
+            uso_tokens,
+            video_url_r2,
+            ad_copy_texto,
+            republicar_falha,
+        )
 
     finally:
         # FinOps compulsório: remoção imediata da mídia na nuvem e do arquivo em tmpfs[cite: 1]
@@ -748,3 +925,44 @@ def processar_anuncio_multimodal(
                     tmp_path,
                     cleanup_error,
                 )
+
+
+@app.task(bind=True, max_retries=3, rate_limit="10/m")
+def processar_anuncio_multimodal(
+    self,
+    oferta_id: int,
+    video_url_r2: str,
+    ad_copy_texto: str,
+    analise: dict | None = None,
+    uso_tokens: dict | None = None,
+):
+    """Consome a mídia permanente do R2, processa com Gemini e grava o custo do modelo."""
+    return _processar_anuncio(self, oferta_id, video_url_r2, ad_copy_texto, analise, uso_tokens)
+
+
+@app.task(bind=True, max_retries=3, rate_limit="10/m")
+def reprocessar_falha_definitiva(
+    self,
+    oferta_id: int,
+    video_url_r2: str,
+    ad_copy_texto: str,
+    analise: dict | None = None,
+    uso_tokens: dict | None = None,
+    erro: str | None = None,
+):
+    """Reprocessa a mensagem de ai_dead_letter. Não publica outra falha definitiva."""
+    logger.info(
+        "[Oferta %s] Reprocesso a partir de %s. Erro anterior: %s",
+        oferta_id,
+        FILA_DEAD_LETTER,
+        erro,
+    )
+    return _processar_anuncio(
+        self,
+        oferta_id,
+        video_url_r2,
+        ad_copy_texto,
+        analise,
+        uso_tokens,
+        republicar_falha=False,
+    )

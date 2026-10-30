@@ -141,6 +141,7 @@ services:
       dockerfile: ./docker/worker.Dockerfile
     container_name: spy_worker_ia
     restart: unless-stopped
+    # ai_dead_letter fica de fora: a falha definitiva espera reprocesso explícito.
     command: celery -A core.celery_app worker -Q ai_multimodal_queue --concurrency=3 --loglevel=INFO
     read_only: true
     cap_drop:
