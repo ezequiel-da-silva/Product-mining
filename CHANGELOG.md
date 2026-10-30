@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.1](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.4.0...v0.4.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* decay stale scores and drain the nightly cleanup ([dbf5bf2](https://github.com/ezequiel-da-silva/Product-mining/commit/dbf5bf27ebccaf6ef4631073a2765a8d0d2fb3ac))
+* mark the fixed ffmpeg argv for Bandit ([f884dd5](https://github.com/ezequiel-da-silva/Product-mining/commit/f884dd5db3cb5d13c9a70efc97964fbb0973f79e))
+* match near-duplicate creatives with a perceptual hash ([b9f1b89](https://github.com/ezequiel-da-silva/Product-mining/commit/b9f1b894ee5f3b25f6b4d39d1879eb10bfd841b7))
+* narrow grants and sign videos only at playback ([834ad48](https://github.com/ezequiel-da-silva/Product-mining/commit/834ad48ff1873edff2988119bc571a9f536f6800))
+* open landing fetches on the already validated IP ([281a9ee](https://github.com/ezequiel-da-silva/Product-mining/commit/281a9eedcd8eb1c34cb7392afbfaf2cdb72cf0a8))
+* price AI tokens, partition completed embeddings, and queue dead letters ([968f0c1](https://github.com/ezequiel-da-silva/Product-mining/commit/968f0c1f1ecda5927de3a46caf17ed028ca05b54))
+* reject ambiguous prices and store the currency ([9a385be](https://github.com/ezequiel-da-silva/Product-mining/commit/9a385be07a46776983f7acd971df615d84da156d))
+* render stored niche and angle titles as text ([b58e469](https://github.com/ezequiel-da-silva/Product-mining/commit/b58e4690480077bfe16a90f623b237617baf41ef))
+* triage cards from the keyboard and announce the list ([3be51ed](https://github.com/ezequiel-da-silva/Product-mining/commit/3be51edc0f1eb3c19ca6bcf63accd830f6cfef0c))
+
 ## [0.4.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.3.0...v0.4.0) (2026-10-29)
 
 
