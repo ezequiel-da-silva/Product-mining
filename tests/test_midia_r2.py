@@ -20,13 +20,13 @@ def test_sem_dominio_publico_a_referencia_e_a_chave(monkeypatch):
     assert referencia_armazenada("videos/ad-1.mp4") == "videos/ad-1.mp4"
 
 
-def test_dominio_publico_guarda_url_estavel(monkeypatch):
+def test_dominio_publico_nao_entra_na_chave(monkeypatch):
     monkeypatch.setattr(
         "src.midia_r2.ler_segredo",
         lambda nome: "https://cdn.example" if nome == "CLOUDFLARE_R2_PUBLIC_URL" else "",
     )
 
-    assert referencia_armazenada("videos/ad-1.mp4") == "https://cdn.example/videos/ad-1.mp4"
+    assert referencia_armazenada("videos/ad-1.mp4") == "videos/ad-1.mp4"
 
 
 def test_leitura_assina_a_chave_por_poucos_minutos(monkeypatch):
@@ -44,16 +44,17 @@ def test_leitura_assina_a_chave_por_poucos_minutos(monkeypatch):
     assert TTL_LEITURA_SEGUNDOS == 300
 
 
-def test_url_publica_nao_e_reassinada(monkeypatch):
-    monkeypatch.setattr(
-        "src.midia_r2.ler_segredo",
-        lambda nome: "https://cdn.example" if nome == "CLOUDFLARE_R2_PUBLIC_URL" else "x",
-    )
+def test_url_publica_e_assinada_pela_chave(monkeypatch):
+    monkeypatch.setattr("src.midia_r2.ler_segredo", _sem_publico)
     cliente = MagicMock()
+    cliente.generate_presigned_url.return_value = (
+        "https://acc.r2.cloudflarestorage.com/videos/ad-1.mp4?X-Amz-Expires=300"
+    )
     monkeypatch.setattr("src.midia_r2.boto3.client", lambda *_args, **_kwargs: cliente)
 
-    assert url_leitura("https://cdn.example/videos/ad-1.mp4") == "https://cdn.example/videos/ad-1.mp4"
-    cliente.generate_presigned_url.assert_not_called()
+    assert url_leitura("https://cdn.example/videos/ad-1.mp4").startswith("https://")
+    assert cliente.generate_presigned_url.call_args.kwargs["Params"]["Key"] == "videos/ad-1.mp4"
+    assert cliente.generate_presigned_url.call_args.kwargs["ExpiresIn"] == TTL_LEITURA_SEGUNDOS
 
 
 def test_url_https_legada_sem_credencial_continua_legivel(monkeypatch):
