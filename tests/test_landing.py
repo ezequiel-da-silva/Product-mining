@@ -2,7 +2,7 @@ import socket
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-from src.comercial import qualificar_pagina
+from src.comercial import aplicar_preco_lido, qualificar_pagina
 from src.landing import PrecoLido, buscar_preco, extrair_preco_html, host_publico, ler_preco
 
 
@@ -29,6 +29,10 @@ def test_extrai_preco_so_com_moeda_inequivoca():
     assert extrair_preco_html("<p>US$ 1,299.90</p>") == PrecoLido(Decimal("1299.90"), "USD")
     assert extrair_preco_html("<p>$ 49.90</p>") == PrecoLido(Decimal("49.90"), "USD")
     assert extrair_preco_html("<p>sem preço</p>") is None
+    assert extrair_preco_html("<span>doar R$ 2,00</span>") is None
+    assert extrair_preco_html("<span>doar R$ 2,00</span><p>R$ 120,00</p>") == PrecoLido(
+        Decimal("120.00"), "BRL"
+    )
     euro = '<script type="application/ld+json">{"offers":{"price":"49.90","priceCurrency":"EUR"}}</script>'
     assert extrair_preco_html(euro) is None
     assert ler_preco("1.299", "BRL") is None
@@ -149,4 +153,39 @@ def test_qualificar_pagina_marca_dados_ausentes_quando_nao_ha_preco(monkeypatch)
     _consulta, params = cursor.execute.call_args.args
     assert params == {"preco": None, "moeda": None, "ausentes": True, "id": 7}
     assert "dados_comerciais_ausentes" in cursor.execute.call_args.args[0]
+    assert "preco_pagina_consultado_em" in cursor.execute.call_args.args[0]
     assert "pendente_lp" in cursor.execute.call_args.args[0]
+
+
+def test_aplicar_preco_lido_substitui_a_fala_e_consulta_unica(monkeypatch):
+    monkeypatch.setattr(
+        "src.comercial.buscar_preco",
+        lambda _url: PrecoLido(Decimal("39.90"), "BRL"),
+    )
+    cursor = MagicMock()
+    cursor.rowcount = 1
+    conexao = MagicMock()
+    conexao.cursor.return_value.__enter__.return_value = cursor
+
+    assert aplicar_preco_lido(conexao, 8, "https://loja.example/produto") is True
+
+    consulta, params = cursor.execute.call_args.args
+    assert params == {"preco": Decimal("39.90"), "moeda": "BRL", "id": 8}
+    assert "status_qualificacao = 'concluido'" in consulta
+    assert "preco_pagina_consultado_em" in consulta
+    conexao.commit.assert_called_once()
+
+
+def test_aplicar_preco_lido_sem_pagina_nao_apaga_o_preco_da_fala(monkeypatch):
+    monkeypatch.setattr("src.comercial.buscar_preco", lambda _url: None)
+    cursor = MagicMock()
+    cursor.rowcount = 1
+    conexao = MagicMock()
+    conexao.cursor.return_value.__enter__.return_value = cursor
+
+    assert aplicar_preco_lido(conexao, 8, "https://loja.example/produto") is True
+
+    consulta, params = cursor.execute.call_args.args
+    assert params == {"id": 8}
+    assert "preco_oferta_estimado" not in consulta
+    assert "preco_pagina_consultado_em = CURRENT_TIMESTAMP" in consulta

@@ -8,7 +8,6 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from schemas import NICHOS_CANONICOS
 from src.dashboard import (
     ALTURA_VIDEO,
     BOTAO_DETALHES,
@@ -37,6 +36,7 @@ from src.dashboard import (
     SQL_OPERACAO_TOKENS,
     TITULO_OFERTAS_RECENTES,
     TITULO_PAINEL,
+    aplicar_grupo_na_oferta,
     _aplicar_busca,
     _avaliar_cota_embedding,
     _carregar_proxima_pagina,
@@ -68,6 +68,7 @@ from src.dashboard import (
     similaridade_percentual,
     texto_bloqueio_cota,
     texto_comercial,
+    texto_criativos,
     texto_comparacao_p95,
     texto_literal,
     texto_nota,
@@ -111,13 +112,14 @@ def test_dashboard_tem_rotulos_formato_e_titulo_sem_emoji():
     assert FILTRO_TODOS == "Todos"
     assert FILTRO_NOTA == "Nota de 75 ou mais"
     assert NOTA_MINIMA == 75
-    assert _opcoes_filtro(["Fitness e Esportes"]) == [
+    assert _opcoes_filtro(["Fitness e Esportes", "Entretenimento e Eventos"]) == [
         "Todos",
-        *NICHOS_CANONICOS,
         "Fitness e Esportes",
+        "Entretenimento e Eventos",
         "Nota de 75 ou mais",
     ]
-    assert _opcoes_filtro(["Pet"]) == ["Todos", *NICHOS_CANONICOS, "Nota de 75 ou mais"]
+    assert _opcoes_filtro(["Pet", "Pet", ""]) == ["Todos", "Pet", "Nota de 75 ou mais"]
+    assert _opcoes_filtro([]) == ["Todos", "Nota de 75 ou mais"]
 
 
 def _conexao_com_linhas(linhas):
@@ -279,6 +281,7 @@ def test_paginacao_recente_usa_cursor_sem_offset():
     consulta, parametros = cursor_db.execute.call_args.args
     assert "(data_ultima_captura, id) < (%s, %s)" in consulta
     assert "triagem.estado = 'descartada'" in consulta
+    assert "ofertas.oferta_canonica_id IS NULL" in consulta
     assert "OFFSET" not in consulta
     assert parametros == (instante, 50, PAGE_SIZE + 1)
 
@@ -294,6 +297,7 @@ def test_busca_vetorial_e_cursor_sao_parametrizados():
     assert tem_mais is True
     consulta, parametros = cursor_db.execute.call_args.args
     assert "triagem.estado = 'descartada'" in consulta
+    assert "ofertas.oferta_canonica_id IS NULL" in consulta
     assert consulta.count("%s::vector") == 3
     assert "JOIN oferta_vetor AS vetor" in consulta
     assert "vetor.embedding <=>" in consulta
@@ -354,6 +358,8 @@ def test_nota_margem_e_checkout_sao_explicitos():
     assert "texto_literal(nicho)" in inspect.getsource(rotulo_acessivel_detalhes)
     assert rotulo_acessivel_detalhes({"id": 3}) == "Ver detalhes da oferta sem nicho #3"
     assert checkout_detectado("https://loja.myshopify.com/products/x") == "Shopify"
+    assert checkout_detectado("https://brans.catalog.yampi.io/produto/p") == "Yampi"
+    assert checkout_detectado("https://checkout2.bilheteriadigital.com/evento") == "Bilheteria Digital"
     assert checkout_detectado("https://exemplo.com") is None
     assert texto_comercial({"dados_comerciais_ausentes": True}) == "Dados comerciais ausentes"
     assert texto_comercial({"preco_oferta_estimado": 10, "preco_moeda": "BRL"}) == "R$ 10,00"
@@ -450,6 +456,7 @@ def test_nichos_concluidos_sao_distintos_e_sem_interpolacao():
     cursor_db.execute.assert_called_once_with(NICHOS_CONCLUIDOS_SQL)
     assert "SELECT DISTINCT nicho" in NICHOS_CONCLUIDOS_SQL
     assert "status_qualificacao = 'concluido'" in NICHOS_CONCLUIDOS_SQL
+    assert "oferta_canonica_id IS NULL" in NICHOS_CONCLUIDOS_SQL
 
 
 def test_cards_e_modal_substituem_a_tabela():
@@ -470,6 +477,7 @@ def test_cards_e_modal_substituem_a_tabela():
     assert "_dialogo_oferta" in fonte_lista
     assert "st.columns(3" in fonte_cards
     assert "border=True" in fonte_cards
+    assert 'height="stretch"' in fonte_cards
     assert "rotulo_acessivel_detalhes" in fonte_cards
     assert "ESTIMATIVA_SOURCING" in inspect.getsource(dashboard._mostrar_margem)
     assert 'st.expander("Transcrição do Criativo")' in fonte_dialogo
@@ -501,6 +509,42 @@ def test_cards_e_modal_substituem_a_tabela():
     assert "_aplicar_lote" in fonte_lista
     assert "_definir_triagem_lote" in inspect.getsource(dashboard._aplicar_lote)
     assert "LEGENDA_ATALHOS" in fonte_lista
+    assert 'oferta["estado_triagem"]' in fonte_lista
+    assert 'estado_triagem") == "testando"' in fonte_dialogo
+    assert "O ângulo desta oferta ainda está sendo gerado." in fonte_dialogo
+    assert "Também neste produto" in fonte_dialogo
+    assert "texto_criativos" in fonte_cards
+
+
+def test_grupo_mostra_preco_brl_da_irma_e_conta_criativos():
+    oferta = {
+        "id": 1,
+        "preco_oferta_estimado": None,
+        "preco_moeda": None,
+        "dados_comerciais_ausentes": True,
+    }
+    aplicar_grupo_na_oferta(
+        oferta,
+        [
+            {"id": 1, "url_destino": "https://loja.example/a", "preco_moeda": None},
+            {
+                "id": 9,
+                "url_destino": "https://loja.example/b",
+                "preco_oferta_estimado": 39.9,
+                "preco_moeda": "BRL",
+            },
+        ],
+    )
+
+    assert oferta["criativos"] == 2
+    assert texto_criativos(2) == "2 criativos"
+    assert texto_criativos(1) is None
+    assert oferta["preco_moeda"] == "BRL"
+    assert oferta["preco_oferta_estimado"] == 39.9
+    assert oferta["dados_comerciais_ausentes"] is False
+    assert oferta["destinos_irmas"] == ["https://loja.example/b"]
+    assert texto_comercial(oferta) == "R$ 39,90"
+    assert rotulo_margem(70, oferta["preco_moeda"]) == "Margem alta: 70%"
 
 
 def test_regiao_viva_anuncia_contagem_e_bloqueio_da_cota():
@@ -607,8 +651,9 @@ def test_cursor_da_busca_reusa_o_vetor_sem_novo_embedding(monkeypatch):
     _carregar_proxima_pagina(conexao, None)
 
     embedding.assert_not_called()
-    consulta, parametros = cursor_db.execute.call_args.args
+    consulta, parametros = cursor_db.execute.call_args_list[0].args
     assert "JOIN oferta_vetor AS vetor" in consulta
+    assert "oferta_canonica_id" in cursor_db.execute.call_args_list[1].args[0]
     assert parametros[0] == _vetor_para_pg_teste(vetor)
     assert estado["ofertas_cursor"] == (0.1, 1)
 

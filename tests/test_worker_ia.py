@@ -151,6 +151,7 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
     assert "sub_nicho = %(sub_nicho)s" in args_chamada[0]
     assert parametros_sql["preco"] == 99.90
     assert parametros_sql["moeda"] == "BRL"
+    assert parametros_sql["angulos"] == "[]"
     assert "preco_moeda = %(moeda)s" in args_chamada[0]
     assert parametros_sql["embedding"] == "[0.15,-0.02,0.88]"
     assert parametros_sql["embedding_texto_hash"] == _hash_texto_embedding(_texto_embedding(dados_mock))
@@ -812,6 +813,8 @@ def test_persistir_grava_custo_quando_ha_preco_vigente(monkeypatch):
             "usd_por_milhao_prompt": Decimal("0.15"),
             "usd_por_milhao_saida": Decimal("0"),
         },
+        {"url_destino": None},
+        None,
     ]
     _pool(monkeypatch, cursor)
 
@@ -909,10 +912,31 @@ def test_dead_letter_tem_fila_propria_fora_do_worker_padrao():
     from core.celery_app import app
 
     assert app.conf.task_routes["src.worker_ia.reprocessar_falha_definitiva"]["queue"] == "ai_dead_letter"
+    assert app.conf.task_routes["src.worker_ia.gerar_angulos_em_teste"]["queue"] == "ai_multimodal_queue"
+    assert app.conf.beat_schedule["gerar-angulos-em-teste"]["task"] == "src.worker_ia.gerar_angulos_em_teste"
+    assert app.conf.beat_schedule["revisar-concluidas"]["task"] == "tasks.qualification.revisar_concluidas"
     assert "ai_dead_letter" in {fila.name for fila in app.conf.task_queues}
     compose = Path(__file__).resolve().parents[1].joinpath("docker-compose.yml").read_text(encoding="utf-8")
     assert "-Q ai_multimodal_queue" in compose
     assert "ai_dead_letter" not in compose.split("-Q ai_multimodal_queue", 1)[1].split("\n", 1)[0]
+
+
+def test_angulo_nao_chama_o_modelo_sem_oferta_em_teste(monkeypatch):
+    import src.worker_ia as worker
+
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    _pool(monkeypatch, cursor)
+    gerar = MagicMock()
+    monkeypatch.setattr(worker.cliente_ia.models, "generate_content", gerar)
+
+    assert worker.gerar_angulos_em_teste() == {"gerados": 0, "candidatas": 0}
+
+    consulta = cursor.execute.call_args.args[0]
+    assert "triagem.estado = 'testando'" in consulta
+    assert "ofertas.oferta_canonica_id IS NULL" in consulta
+    assert "angulos_alternativos = '[]'::jsonb" in consulta
+    gerar.assert_not_called()
 
 
 def test_embedding_novo_guarda_tokens_para_o_custo(monkeypatch):

@@ -29,7 +29,8 @@ from core.pontuacao import (  # noqa: E402
     TETO_SCORE,
 )
 from core.secrets import ler_segredo  # noqa: E402
-from src.comercial import qualificar_pagina  # noqa: E402
+from src.agrupamento import ids_para_agrupar, vincular_grupo  # noqa: E402
+from src.comercial import aplicar_preco_lido, listar_precos_ausentes, qualificar_pagina  # noqa: E402
 from src.midia_r2 import referencia_armazenada  # noqa: E402
 from src.phash_visual import LIMIAR_HAMMING, CapturaQuadro  # noqa: E402
 
@@ -389,7 +390,7 @@ def _deve_analisar(phash: str | None, oferta_id: int, visual: str | None = None)
                 FROM ofertas
                 WHERE id <> %(id)s
                   AND (
-                    (%(phash)s IS NOT NULL AND phash_criativo = %(phash)s)
+                    (%(phash)s::text IS NOT NULL AND phash_criativo = %(phash)s::text)
                     OR (
                       %(visual)s::bit(64) IS NOT NULL
                       AND phash_perceptual IS NOT NULL
@@ -578,6 +579,11 @@ def _copiar_enriquecimento(
         return False
     with get_pool().connection() as conn:
         qualificar_pagina(conn, oferta_id, url_destino)
+    try:
+        with get_pool().connection() as conn:
+            vincular_grupo(conn, oferta_id)
+    except Exception:
+        logger.exception("Oferta %s herdou o criativo sem agrupar o produto.", oferta_id)
     logger.info("Oferta %s herdou o criativo e seguiu para a página de destino.", oferta_id)
     return True
 
@@ -681,3 +687,91 @@ def avaliar_oferta(self, payload: dict):
             }
         logger.exception("Falha ao qualificar anúncio %s: %s", campos.get("ad_id"), error)
         raise self.retry(exc=error, countdown=15 * (2**self.request.retries)) from error
+
+
+LOTE_REVISAO = 5
+LOTE_GRUPOS = 20
+SQL_DRENAR_PENDENTES = """
+SELECT id, url_video_r2, copy_texto, phash_criativo, phash_perceptual,
+       falhas_ia, falhas_ia_em
+FROM ofertas
+WHERE status_qualificacao = 'pendente'
+  AND score >= %(limiar)s
+  AND url_video_r2 IS NOT NULL
+ORDER BY id
+"""
+
+
+@app.task(name="tasks.qualification.revisar_concluidas")
+def revisar_concluidas():
+    """Agrupa criativos repetidos e lê o preço das concluídas que ainda não têm moeda."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            pendentes = ids_para_agrupar(cur, LOTE_GRUPOS)
+        conn.commit()
+    for oferta_id in pendentes:
+        try:
+            with get_pool().connection() as conn:
+                vincular_grupo(conn, oferta_id)
+        except Exception:
+            logger.exception("Falha ao agrupar a oferta %s.", oferta_id)
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            ausentes = listar_precos_ausentes(cur, LOTE_REVISAO)
+        conn.commit()
+    lidos = 0
+    for linha in ausentes:
+        try:
+            with get_pool().connection() as conn:
+                if aplicar_preco_lido(conn, int(linha["id"]), linha.get("url_destino")):
+                    lidos += 1
+        except Exception:
+            logger.exception("Falha ao ler o preço da oferta %s.", linha.get("id"))
+    return {"agrupadas": len(pendentes), "precos_consultados": lidos}
+
+
+@app.task(name="tasks.qualification.drenar_pendentes")
+def drenar_pendentes():
+    """Promove, uma vez, as pendentes que já atingem a régua imediata e têm vídeo no R2."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SQL_DRENAR_PENDENTES, {"limiar": DESPACHO_IMEDIATO})
+            candidatas = cur.fetchall()
+        conn.commit()
+
+    despachadas = 0
+    duplicadas = 0
+    bloqueadas = 0
+    for oferta in candidatas:
+        if not _pode_despachar_ia(oferta):
+            bloqueadas += 1
+            continue
+        phash = oferta.get("phash_criativo")
+        visual = oferta.get("phash_perceptual")
+        if (phash or visual) and not _deve_analisar(phash, oferta["id"], visual):
+            duplicadas += 1
+            continue
+        video = oferta["url_video_r2"]
+        if _url_video_ja_analisada(video, oferta["id"]):
+            duplicadas += 1
+            continue
+        app.send_task(
+            "src.worker_ia.processar_anuncio_multimodal",
+            args=[oferta["id"], video, oferta.get("copy_texto") or ""],
+            queue="ai_multimodal_queue",
+        )
+        despachadas += 1
+        logger.info(
+            "Oferta %s despachada na drenagem; motivo=score_%s.",
+            oferta["id"],
+            DESPACHO_IMEDIATO,
+        )
+
+    resultado = {
+        "lidas": len(candidatas),
+        "despachadas": despachadas,
+        "duplicadas": duplicadas,
+        "bloqueadas": bloqueadas,
+    }
+    logger.info("Drenagem de pendentes concluída: %s.", resultado)
+    return resultado

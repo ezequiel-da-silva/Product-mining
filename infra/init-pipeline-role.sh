@@ -54,6 +54,8 @@ GRANT UPDATE (
     gatilho_mental,
     preco_oferta_estimado,
     preco_moeda,
+    preco_pagina_consultado_em,
+    oferta_canonica_id,
     margem_estimada_pct,
     objecoes_quebradas,
     angulos_alternativos,
@@ -84,5 +86,30 @@ BEGIN
   IF to_regprocedure('public.mes_captura_oferta(timestamptz)') IS NOT NULL THEN
     GRANT EXECUTE ON FUNCTION mes_captura_oferta(TIMESTAMPTZ) TO pipeline_writer;
   END IF;
+  IF to_regclass('public.triagem_oferta') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE triagem_oferta TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.oferta_vetor') IS NOT NULL THEN
+    GRANT SELECT ON TABLE oferta_vetor TO pipeline_writer;
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  particao regclass;
+BEGIN
+  IF to_regclass('public.oferta_vetor') IS NULL THEN
+    RETURN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pipeline_writer') THEN
+    RETURN;
+  END IF;
+  FOR particao IN
+    SELECT inhrelid
+    FROM pg_inherits
+    WHERE inhparent = 'public.oferta_vetor'::regclass
+  LOOP
+    EXECUTE format('GRANT SELECT ON TABLE %s TO pipeline_writer', particao);
+  END LOOP;
 END $$;
 SQL

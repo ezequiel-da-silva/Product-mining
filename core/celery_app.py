@@ -26,12 +26,21 @@ app.conf.update(
         "tasks.qualification.*": {"queue": "qualification_queue"},
         "src.worker_ia.processar_anuncio_multimodal": {"queue": "ai_multimodal_queue"},
         "src.worker_ia.reprocessar_falha_definitiva": {"queue": "ai_dead_letter"},
+        "src.worker_ia.gerar_angulos_em_teste": {"queue": "ai_multimodal_queue"},
         "tasks.lifecycle.expirar_ofertas_fracas": {"queue": "lifecycle_queue"},
     },
     beat_schedule={
         "expirar-ofertas-fracas": {
             "task": "tasks.lifecycle.expirar_ofertas_fracas",
             "schedule": crontab(hour=3, minute=0),
+        },
+        "revisar-concluidas": {
+            "task": "tasks.qualification.revisar_concluidas",
+            "schedule": crontab(minute="*/2"),
+        },
+        "gerar-angulos-em-teste": {
+            "task": "src.worker_ia.gerar_angulos_em_teste",
+            "schedule": crontab(minute="*/2"),
         },
     },
     worker_prefetch_multiplier=1,

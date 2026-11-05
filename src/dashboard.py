@@ -15,7 +15,7 @@ from core.secrets import ler_segredo
 from google import genai
 from google.genai import types
 from psycopg.rows import dict_row
-from schemas import NICHOS_CANONICOS, nicho_canonico
+from schemas import nicho_canonico
 from src.midia_r2 import url_leitura
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -123,6 +123,7 @@ NICHOS_CONCLUIDOS_SQL = """
     SELECT DISTINCT nicho
     FROM ofertas
     WHERE status_qualificacao = 'concluido'
+      AND oferta_canonica_id IS NULL
       AND nicho IS NOT NULL
       AND btrim(nicho) <> ''
     ORDER BY nicho
@@ -230,7 +231,7 @@ def _clausula_filtro(filtro: str | None) -> tuple[str, tuple]:
 
 
 def _sql_com_filtro(consulta: str, clausula: str, ocultar_descartadas: bool = True) -> str:
-    partes = []
+    partes = ["ofertas.oferta_canonica_id IS NULL"]
     if clausula:
         partes.append(clausula)
     if ocultar_descartadas:
@@ -378,6 +379,7 @@ def checkout_detectado(url: object) -> str | None:
     for marcador, nome in (
         ("shopify", "Shopify"),
         ("yampi", "Yampi"),
+        ("bilheteria", "Bilheteria Digital"),
         ("cartpanda", "CartPanda"),
         ("nuvemshop", "Nuvemshop"),
         ("tiendanube", "Tiendanube"),
@@ -484,6 +486,64 @@ div[data-testid="stHtml"]:has(script[data-atalhos-triagem]) {{
 
 def _registrar_atalhos_triagem() -> None:
     st.html(_html_atalhos_triagem(), unsafe_allow_javascript=True)
+
+
+def texto_criativos(total: object) -> str | None:
+    if isinstance(total, bool) or not isinstance(total, int) or total <= 1:
+        return None
+    return f"{total} criativos"
+
+
+def aplicar_grupo_na_oferta(oferta: dict, membros: list[dict]) -> None:
+    """O cartão usa o preço em BRL de qualquer URL do grupo e lista os outros destinos."""
+    proprios = [membro for membro in membros if isinstance(membro, dict)]
+    oferta["criativos"] = len(proprios) if proprios else 1
+    oferta["destinos_irmas"] = [
+        membro["url_destino"]
+        for membro in proprios
+        if membro.get("id") != oferta.get("id") and isinstance(membro.get("url_destino"), str)
+    ]
+    if oferta.get("preco_moeda") == "BRL" and oferta.get("preco_oferta_estimado") is not None:
+        return
+    for membro in sorted(proprios, key=lambda item: item.get("id") or 0):
+        if membro.get("preco_moeda") == "BRL" and membro.get("preco_oferta_estimado") is not None:
+            oferta["preco_oferta_estimado"] = membro["preco_oferta_estimado"]
+            oferta["preco_moeda"] = "BRL"
+            oferta["dados_comerciais_ausentes"] = False
+            return
+
+
+SQL_MEMBROS_GRUPO = """
+SELECT id, oferta_canonica_id, url_destino, preco_oferta_estimado, preco_moeda
+FROM ofertas
+WHERE status_qualificacao = 'concluido'
+  AND (id = ANY(%s) OR oferta_canonica_id = ANY(%s))
+ORDER BY id
+"""
+
+
+def _enriquecer_grupos(conn, ofertas: list[dict]) -> None:
+    ids = [
+        oferta["id"]
+        for oferta in ofertas
+        if isinstance(oferta.get("id"), int) and not isinstance(oferta.get("id"), bool)
+    ]
+    if not ids:
+        return
+    with conn.cursor() as cur:
+        cur.execute(SQL_MEMBROS_GRUPO, (ids, ids))
+        linhas = cur.fetchall()
+    por_canon: dict[int, list[dict]] = {identificador: [] for identificador in ids}
+    for linha in linhas:
+        if not isinstance(linha, dict):
+            continue
+        canonica = linha.get("oferta_canonica_id")
+        if canonica in por_canon:
+            por_canon[canonica].append(linha)
+        elif linha.get("id") in por_canon:
+            por_canon[linha["id"]].append(linha)
+    for oferta in ofertas:
+        aplicar_grupo_na_oferta(oferta, por_canon.get(oferta.get("id"), []))
 
 
 def texto_comercial(oferta: dict) -> str:
@@ -619,17 +679,17 @@ def _corpo_dialogo(oferta: dict) -> None:
     with st.expander("Transcrição do Criativo"):
         st.write(oferta.get("transcricao_video") or "—")
 
-    gatilho, margem, preco = st.columns(3)
+    gatilho, margem, preco = st.columns(3, vertical_alignment="top")
     with gatilho:
-        with st.container(border=True):
+        with st.container(border=True, height="stretch"):
             st.caption(ROTULOS_OFERTAS["gatilho_mental"])
             st.write(oferta.get("gatilho_mental") or "—")
     with margem:
-        with st.container(border=True):
+        with st.container(border=True, height="stretch"):
             st.caption(ROTULOS_OFERTAS["margem_estimada_pct"])
             _mostrar_margem(oferta.get("margem_estimada_pct"), oferta.get("preco_moeda"))
     with preco:
-        with st.container(border=True):
+        with st.container(border=True, height="stretch"):
             st.caption(ROTULOS_OFERTAS["preco_oferta_estimado"])
             st.write(texto_comercial(oferta))
 
@@ -641,15 +701,31 @@ def _corpo_dialogo(oferta: dict) -> None:
         st.markdown(f"**{ROTULOS_OFERTAS['copy_texto']}**")
         st.write(oferta.get("copy_texto") or "—")
 
-    objecoes_col, angulos_col = st.columns(2, vertical_alignment="top")
-    with objecoes_col:
-        with st.container(border=True, height="stretch"):
+    if oferta.get("estado_triagem") == "testando":
+        objecoes_col, angulos_col = st.columns(2, vertical_alignment="top")
+        with objecoes_col:
+            with st.container(border=True, height="stretch"):
+                st.markdown(f"**{ROTULOS_OFERTAS['objecoes_quebradas']}**")
+                _escrever_objecoes(oferta.get("objecoes_quebradas"))
+        with angulos_col:
+            with st.container(border=True, height="stretch"):
+                st.markdown(f"**{ROTULOS_OFERTAS['angulos_alternativos']}**")
+                angulos = _como_json(oferta.get("angulos_alternativos"))
+                if isinstance(angulos, list) and angulos:
+                    _escrever_angulos(oferta.get("angulos_alternativos"))
+                else:
+                    st.write("O ângulo desta oferta ainda está sendo gerado.")
+    else:
+        with st.container(border=True):
             st.markdown(f"**{ROTULOS_OFERTAS['objecoes_quebradas']}**")
             _escrever_objecoes(oferta.get("objecoes_quebradas"))
-    with angulos_col:
-        with st.container(border=True, height="stretch"):
-            st.markdown(f"**{ROTULOS_OFERTAS['angulos_alternativos']}**")
-            _escrever_angulos(oferta.get("angulos_alternativos"))
+
+    destinos = oferta.get("destinos_irmas")
+    if isinstance(destinos, list) and destinos:
+        st.markdown("**Também neste produto**")
+        for destino in destinos:
+            if isinstance(destino, str):
+                _link_loja(destino)
 
     url = _url_http(oferta.get("url_destino"))
     if url:
@@ -672,7 +748,7 @@ def _reiniciar_listagem(frase: str = "", vetor: list[float] | None = None) -> No
 
 def _opcoes_filtro(nichos: list[str]) -> list[str]:
     nomes: list[str] = []
-    for nome in (*NICHOS_CANONICOS, *nichos):
+    for nome in nichos:
         if nome and nome not in nomes:
             nomes.append(nome)
     return [FILTRO_TODOS, *nomes, FILTRO_NOTA]
@@ -755,6 +831,7 @@ def _carregar_proxima_pagina(conn, filtro: str | None, ocultar_descartadas: bool
     else:
         ofertas, tem_mais = consultar_ofertas_recentes(conn, cursor, filtro, ocultar_descartadas)
 
+    _enriquecer_grupos(conn, ofertas)
     st.session_state["ofertas_resultados"].extend(ofertas)
     if ofertas:
         ultima = ofertas[-1]
@@ -781,7 +858,7 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
         colunas = st.columns(3, vertical_alignment="top")
         for deslocamento, oferta in enumerate(ofertas[inicio : inicio + 3]):
             with colunas[deslocamento]:
-                with st.container(border=True):
+                with st.container(border=True, height="stretch"):
                     nicho = rotulo_nicho(oferta)
                     oferta_id = oferta.get("id")
                     if isinstance(oferta_id, int) and not isinstance(oferta_id, bool):
@@ -796,6 +873,9 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
                     checkout = checkout_detectado(oferta.get("url_destino"))
                     if checkout:
                         st.caption(f"Checkout: {checkout}")
+                    contagem = texto_criativos(oferta.get("criativos"))
+                    if contagem:
+                        st.caption(contagem)
                     st.markdown(f"{ROTULOS_OFERTAS['score']}: {texto_nota(oferta.get('score'))}")
                     if em_busca and oferta.get("distancia") is not None:
                         percentual = similaridade_percentual(oferta["distancia"])
@@ -1077,7 +1157,9 @@ def _painel_ofertas(conn) -> None:
     triagem = _triagem_por_oferta(conn, ofertas)
     escolhida = _mostrar_cards(ofertas, em_busca, triagem)
     if escolhida and escolhida["tipo"] == "detalhe":
-        _dialogo_oferta(escolhida["oferta"])
+        oferta = escolhida["oferta"]
+        oferta["estado_triagem"] = triagem.get(oferta.get("id"))
+        _dialogo_oferta(oferta)
     elif escolhida and escolhida["tipo"] == "triagem":
         _definir_triagem(conn, int(escolhida["id"]), escolhida["estado"])
         st.rerun()

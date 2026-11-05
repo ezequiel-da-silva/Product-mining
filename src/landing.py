@@ -294,9 +294,13 @@ def extrair_preco_html(html: str) -> PrecoLido | None:
             preco = ler_preco(conteudo.group(1), moeda_meta)
             if preco is not None:
                 return preco
-    encontrado = _PRECO_REAL.search(html)
-    if encontrado:
-        return ler_preco(encontrado.group(1), "BRL")
+    for encontrado in _PRECO_REAL.finditer(html):
+        antes = html[max(0, encontrado.start() - 12) : encontrado.start()].casefold()
+        if "doar" in antes:
+            continue
+        preco = ler_preco(encontrado.group(1), "BRL")
+        if preco is not None:
+            return preco
     dolar = _PRECO_DOLAR.search(html)
     if dolar:
         return ler_preco(dolar.group(0))

@@ -23,6 +23,128 @@ with patch("psycopg_pool.ConnectionPool"):
     )
 
 
+def test_revisao_nao_le_pagina_sem_candidata(monkeypatch):
+    import src.worker_qualification as worker
+
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    conexao = MagicMock()
+    conexao.cursor.return_value.__enter__.return_value = cursor
+    pool = MagicMock()
+    pool.connection.return_value.__enter__.return_value = conexao
+    monkeypatch.setattr(worker, "get_pool", lambda: pool)
+    buscar = MagicMock()
+    monkeypatch.setattr(worker, "aplicar_preco_lido", buscar)
+
+    assert worker.revisar_concluidas() == {"agrupadas": 0, "precos_consultados": 0}
+
+    buscar.assert_not_called()
+    consultas = [chamada.args[0] for chamada in cursor.execute.call_args_list]
+    assert any("preco_pagina_consultado_em IS NULL" in consulta for consulta in consultas)
+    assert any("oferta_canonica_id IS NULL" in consulta for consulta in consultas)
+
+
+def _pool_com_linhas(linhas):
+    cursor = MagicMock()
+    cursor.fetchall.return_value = linhas
+    conexao = MagicMock()
+    conexao.cursor.return_value.__enter__.return_value = cursor
+    pool = MagicMock()
+    pool.connection.return_value.__enter__.return_value = conexao
+    return pool, cursor
+
+
+def test_drenagem_sem_candidata_nao_despacha(monkeypatch):
+    import src.worker_qualification as worker
+
+    pool, cursor = _pool_com_linhas([])
+    monkeypatch.setattr(worker, "get_pool", lambda: pool)
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+
+    assert worker.drenar_pendentes() == {
+        "lidas": 0,
+        "despachadas": 0,
+        "duplicadas": 0,
+        "bloqueadas": 0,
+    }
+
+    send_task.assert_not_called()
+    consulta, params = cursor.execute.call_args.args
+    assert "status_qualificacao = 'pendente'" in consulta
+    assert "score >= %(limiar)s" in consulta
+    assert "url_video_r2 IS NOT NULL" in consulta
+    assert params == {"limiar": worker.DESPACHO_IMEDIATO}
+
+
+def test_drenagem_despacha_trinca_uma_vez(monkeypatch):
+    import src.worker_qualification as worker
+
+    pool, _cursor = _pool_com_linhas(
+        [
+            {
+                "id": 42,
+                "url_video_r2": "https://cdn.test/video.mp4",
+                "copy_texto": "Copy",
+                "phash_criativo": "ab" * 32,
+                "phash_perceptual": None,
+                "falhas_ia": 0,
+                "falhas_ia_em": None,
+            }
+        ]
+    )
+    monkeypatch.setattr(worker, "get_pool", lambda: pool)
+    monkeypatch.setattr(worker, "_pode_despachar_ia", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(worker, "_deve_analisar", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(worker, "_url_video_ja_analisada", lambda *_args, **_kwargs: False)
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+
+    assert worker.drenar_pendentes()["despachadas"] == 1
+    send_task.assert_called_once_with(
+        "src.worker_ia.processar_anuncio_multimodal",
+        args=[42, "https://cdn.test/video.mp4", "Copy"],
+        queue="ai_multimodal_queue",
+    )
+
+
+def test_drenagem_nao_publica_duplicata_nem_falha(monkeypatch):
+    import src.worker_qualification as worker
+
+    linha = {
+        "id": 42,
+        "url_video_r2": "https://cdn.test/video.mp4",
+        "copy_texto": "Copy",
+        "phash_criativo": "ab" * 32,
+        "phash_perceptual": None,
+        "falhas_ia": 5,
+        "falhas_ia_em": None,
+    }
+    pool, _cursor = _pool_com_linhas([linha])
+    monkeypatch.setattr(worker, "get_pool", lambda: pool)
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+    monkeypatch.setattr(worker, "_deve_analisar", lambda *_args, **_kwargs: False)
+
+    assert worker.drenar_pendentes() == {
+        "lidas": 1,
+        "despachadas": 0,
+        "duplicadas": 0,
+        "bloqueadas": 1,
+    }
+
+    pool, _cursor = _pool_com_linhas([linha])
+    monkeypatch.setattr(worker, "get_pool", lambda: pool)
+    monkeypatch.setattr(worker, "_pode_despachar_ia", lambda *_args, **_kwargs: True)
+    assert worker.drenar_pendentes() == {
+        "lidas": 1,
+        "despachadas": 0,
+        "duplicadas": 1,
+        "bloqueadas": 0,
+    }
+    send_task.assert_not_called()
+
+
 def test_pool_nao_e_criado_na_importacao():
     import src.worker_qualification as worker
 
@@ -235,6 +357,33 @@ def test_score_50_com_video_persistido_despacha_para_ia(monkeypatch, caplog):
 def test_primeiro_avistamento_nao_despacha_ia(monkeypatch):
     import src.worker_qualification as worker
 
+    payload = _payload_qualificacao()
+    payload["snapshot"]["link_url"] = "https://loja.example/produto"
+    monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None, None))
+    monkeypatch.setattr(
+        worker,
+        "_persistir_oferta",
+        lambda *_: {
+            "id": 42,
+            "score": 30,
+            "status_qualificacao": "pendente",
+            "phash_criativo": None,
+            "falhas_ia": 0,
+            "vezes_avistado": 1,
+        },
+    )
+    send_task = MagicMock()
+    monkeypatch.setattr(worker.app, "send_task", send_task)
+
+    result = avaliar_oferta.run(payload)
+
+    assert result["status"] == "qualified"
+    send_task.assert_not_called()
+
+
+def test_trio_despacha_no_primeiro_avistamento(monkeypatch, caplog):
+    import src.worker_qualification as worker
+
     monkeypatch.setattr(worker, "_upload_video_r2", lambda *_: ("https://cdn.test/video.mp4", None, None))
     monkeypatch.setattr(
         worker,
@@ -248,13 +397,20 @@ def test_primeiro_avistamento_nao_despacha_ia(monkeypatch):
             "vezes_avistado": 1,
         },
     )
+    monkeypatch.setattr(worker, "_url_video_ja_analisada", lambda *_args: False)
     send_task = MagicMock()
     monkeypatch.setattr(worker.app, "send_task", send_task)
 
-    result = avaliar_oferta.run(_payload_qualificacao())
+    with caplog.at_level(logging.INFO):
+        result = avaliar_oferta.run(_payload_qualificacao())
 
     assert result["status"] == "qualified"
-    send_task.assert_not_called()
+    send_task.assert_called_once_with(
+        "src.worker_ia.processar_anuncio_multimodal",
+        args=[42, "https://cdn.test/video.mp4", "Copy"],
+        queue="ai_multimodal_queue",
+    )
+    assert "motivo=score_55" in caplog.text
 
 
 def test_score_75_despacha_no_primeiro_avistamento(monkeypatch, caplog):
@@ -287,7 +443,7 @@ def test_score_75_despacha_no_primeiro_avistamento(monkeypatch, caplog):
         args=[42, "https://cdn.test/video.mp4", "Copy"],
         queue="ai_multimodal_queue",
     )
-    assert "motivo=score_60" in caplog.text
+    assert "motivo=score_55" in caplog.text
 
 
 def test_url_de_video_ja_analisada_nao_despacha_ia(monkeypatch):

@@ -89,6 +89,23 @@ def test_pipeline_atualiza_por_coluna_e_painel_le_tabela_a_tabela():
     assert "pg_roles" in fadiga
 
 
+def test_grupo_e_preco_da_pagina_entram_no_update_do_pipeline():
+    migracao = (RAIZ / "infra/migrations/018_preco_pagina_e_grupo.sql").read_text(encoding="utf-8")
+    pipeline = (RAIZ / "infra/init-pipeline-role.sh").read_text(encoding="utf-8")
+    bloco = _bloco_update(pipeline)
+
+    assert "ADD COLUMN IF NOT EXISTS preco_pagina_consultado_em" in migracao
+    assert "ADD COLUMN IF NOT EXISTS oferta_canonica_id" in migracao
+    assert "GRANT UPDATE (" in migracao
+    assert "preco_pagina_consultado_em" in migracao
+    assert "oferta_canonica_id" in migracao
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE triagem_oferta TO pipeline_writer" in migracao
+    assert "GRANT SELECT ON TABLE oferta_vetor TO pipeline_writer" in migracao
+    assert "preco_pagina_consultado_em" in bloco
+    assert "oferta_canonica_id" in bloco
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE triagem_oferta TO pipeline_writer" in pipeline
+
+
 def test_security_md_publica_o_canal_de_reporte():
     texto = (RAIZ / "SECURITY.md").read_text(encoding="utf-8")
     assert "ezekisilva544@gmail.com" in texto

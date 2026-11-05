@@ -42,6 +42,14 @@ class AnguloVenda(BaseModel):
     copy_sugerida: str = Field(description="Sugestão de um novo texto de anúncio curto (Copy) usando este ângulo.")
 
 
+class GeracaoAnguloSchema(BaseModel):
+    angulos_alternativos: List[AnguloVenda] = Field(
+        description="Gere 1 ângulo de venda, o mais forte, para um teste A/B.",
+        min_length=1,
+        max_length=1,
+    )
+
+
 class AnaliseAnuncioSchema(BaseModel):
     transcricao_video: str = Field(
         description="Transcrição apenas da locução e dos diálogos dos primeiros 30 segundos do vídeo."
@@ -84,10 +92,6 @@ class AnaliseAnuncioSchema(BaseModel):
         default=None,
         ge=0,
         le=100,
-    )
-    angulos_alternativos: List[AnguloVenda] = Field(
-        description="Gere 1 ângulo de venda, o mais forte, para um teste A/B futuro.",
-        max_length=1,
     )
 
     @model_validator(mode="after")

@@ -28,10 +28,12 @@ CREATE TABLE IF NOT EXISTS ofertas (
     gatilho_mental VARCHAR(100),
     preco_oferta_estimado NUMERIC(10, 2),
     preco_moeda VARCHAR(3),
+    preco_pagina_consultado_em TIMESTAMPTZ,
+    oferta_canonica_id BIGINT REFERENCES ofertas (id) ON DELETE SET NULL,
     margem_estimada_pct SMALLINT,
     catalogo_mais_vendidos JSONB,
     objecoes_quebradas JSONB,       -- Lista estruturada de objeções resolvidas
-    angulos_alternativos JSONB,     -- 3 ângulos sugeridos pela IA para testes A/B
+    angulos_alternativos JSONB,     -- um ângulo, gerado quando a oferta está em teste
     custo_tokens_ia NUMERIC(14, 6),
     modelo_ia VARCHAR(80),
     versao_preco_ia VARCHAR(40),
@@ -60,6 +62,8 @@ CREATE TABLE IF NOT EXISTS ofertas (
         CHECK (preco_oferta_estimado IS NULL OR preco_oferta_estimado >= 0),
     CONSTRAINT ofertas_preco_moeda_check
         CHECK (preco_moeda IS NULL OR preco_moeda IN ('BRL', 'USD')),
+    CONSTRAINT ofertas_canonica_diferente_check
+        CHECK (oferta_canonica_id IS NULL OR oferta_canonica_id <> id),
     CONSTRAINT ofertas_fadiga_dias_check
         CHECK (fadiga_dias >= 0)
 );
@@ -75,6 +79,9 @@ CREATE INDEX IF NOT EXISTS idx_ofertas_score ON ofertas (score DESC);
 CREATE INDEX IF NOT EXISTS idx_ofertas_status ON ofertas (status_qualificacao);
 CREATE INDEX IF NOT EXISTS idx_ofertas_page_id ON ofertas (page_id);
 CREATE INDEX IF NOT EXISTS idx_ofertas_phash ON ofertas (phash_criativo);
+CREATE INDEX IF NOT EXISTS idx_ofertas_canonica
+    ON ofertas (oferta_canonica_id)
+    WHERE oferta_canonica_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_ofertas_nicho ON ofertas (nicho);
 CREATE INDEX IF NOT EXISTS idx_ofertas_concluidas_captura
     ON ofertas (data_ultima_captura DESC, id DESC)

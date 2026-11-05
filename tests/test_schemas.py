@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from schemas import NICHOS_CANONICOS, AnaliseAnuncioSchema, nicho_canonico
+from schemas import NICHOS_CANONICOS, AnaliseAnuncioSchema, GeracaoAnguloSchema, nicho_canonico
 
 
 def test_analise_schema_sucesso():
@@ -27,6 +27,7 @@ def test_analise_schema_sucesso():
         ],
     }
     esquema = AnaliseAnuncioSchema(**dados_mock)
+    assert "angulos_alternativos" not in AnaliseAnuncioSchema.model_fields
     assert esquema.nicho == "Utilidades"
     assert esquema.sub_nicho is None
     assert esquema.preco_oferta_estimado == 199.90
@@ -90,21 +91,24 @@ def test_analise_schema_descarta_preco_ambiguo():
     assert euro.preco_moeda is None
 
 
-def test_analise_schema_rejeita_mais_de_um_angulo():
-    dados = {
-        "transcricao_video": "Fala dos primeiros 30 segundos.",
-        "gancho_3s": "Produto na mão.",
-        "nicho": "Casa",
-        "gatilho_mental": "Praticidade",
-        "objecoes_quebradas": [],
+def test_geracao_de_angulo_aceita_um_e_rejeita_dois():
+    um = {
+        "angulos_alternativos": [
+            {"titulo": "Um", "foco_emocional": "Medo", "copy_sugerida": "Copy 1"},
+        ]
+    }
+    dois = {
         "angulos_alternativos": [
             {"titulo": "Um", "foco_emocional": "Medo", "copy_sugerida": "Copy 1"},
             {"titulo": "Dois", "foco_emocional": "Vaidade", "copy_sugerida": "Copy 2"},
-        ],
+        ]
     }
 
+    assert len(GeracaoAnguloSchema(**um).angulos_alternativos) == 1
     with pytest.raises(ValidationError):
-        AnaliseAnuncioSchema(**dados)
+        GeracaoAnguloSchema(**dois)
+    with pytest.raises(ValidationError):
+        GeracaoAnguloSchema(angulos_alternativos=[])
 
 
 def test_analise_schema_falha_campo_obrigatorio():

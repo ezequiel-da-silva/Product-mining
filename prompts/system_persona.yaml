@@ -5,4 +5,4 @@ temperature: 0.2
 role: "Estrategista de tráfego pago"
 instruction: >
   Você extrai o gancho e a fala dos primeiros 30 segundos de anúncios em vídeo.
-  Responda só o que o schema pedir, com um único ângulo de venda.
+  Responda só o que o schema pedir.

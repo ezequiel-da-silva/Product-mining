@@ -29,8 +29,9 @@ if BASE_DIR not in sys.path:
 from core.celery_app import app  # noqa: E402
 from core.pontuacao import BONUS_ANALISE_IA, TETO_SCORE  # noqa: E402
 from core.secrets import ler_segredo  # noqa: E402
-from schemas import AnaliseAnuncioSchema, nicho_canonico  # noqa: E402
-from src.comercial import qualificar_pagina  # noqa: E402
+from schemas import AnaliseAnuncioSchema, GeracaoAnguloSchema, nicho_canonico  # noqa: E402
+from src.agrupamento import vincular_grupo  # noqa: E402
+from src.comercial import aplicar_preco_lido, qualificar_pagina  # noqa: E402
 from src.midia_r2 import url_leitura  # noqa: E402
 from src.phash_visual import LIMIAR_HAMMING  # noqa: E402
 
@@ -97,6 +98,7 @@ PRECISAO_CUSTO = Decimal("0.000001")
 _tokens_embedding_pendentes: dict[str, int | None] = {"valor": None}
 JANELA_VIDEO_FIM = "30s"
 LIMITE_COPY_PROMPT = 2000
+LOTE_ANGULOS = 3
 
 MAX_VIDEO_BYTES = 250 * 1024 * 1024  # Teto de 250 MB para proteger tmpfs
 PROCESSING_LEASE_SECONDS = 2 * 60 * 60
@@ -332,7 +334,7 @@ def persistir_resultado_ia(
                     "moeda": moeda,
                     "margem": dados.get("margem_estimada_pct"),
                     "objecoes": json.dumps(dados.get("objecoes_quebradas", [])),
-                    "angulos": json.dumps(dados.get("angulos_alternativos", [])),
+                    "angulos": "[]",
                     "embedding": embedding_str,
                     "embedding_texto_hash": _hash_texto_embedding(_texto_embedding(dados)),
                     "tokens_prompt": uso_tokens.get("prompt"),
@@ -348,18 +350,38 @@ def persistir_resultado_ia(
             )
             persisted = cur.rowcount == 1
             irmas = []
+            url_destino = None
             if persisted:
+                cur.execute("SELECT url_destino FROM ofertas WHERE id = %(id)s", {"id": oferta_id})
+                linha_url = cur.fetchone()
+                if isinstance(linha_url, dict):
+                    url_destino = linha_url.get("url_destino")
                 cur.execute(
                     SQL_PROPAGAR_IRMAS,
                     {"id": oferta_id, "bonus": BONUS_ANALISE_IA, "teto": TETO_SCORE, "limiar": LIMIAR_HAMMING},
                 )
-                irmas = cur.fetchall()
+                encontradas = cur.fetchall()
+                irmas = encontradas if isinstance(encontradas, list) else []
             conn.commit()
+    if persisted:
+        try:
+            with get_pool().connection() as conn:
+                aplicar_preco_lido(conn, oferta_id, url_destino if isinstance(url_destino, str) else None)
+        except Exception:
+            logger.exception("Oferta %s concluída sem ler o preço da página.", oferta_id)
     for irma in irmas:
+        if not isinstance(irma, dict):
+            continue
         with get_pool().connection() as conn:
             qualificar_pagina(conn, irma["id"], irma.get("url_destino"))
     if irmas:
         logger.info("Oferta %s propagou o criativo para %s irmãs.", oferta_id, len(irmas))
+    if persisted:
+        try:
+            with get_pool().connection() as conn:
+                vincular_grupo(conn, oferta_id)
+        except Exception:
+            logger.exception("Oferta %s concluída sem agrupar o criativo.", oferta_id)
     return persisted
 
 
@@ -797,8 +819,6 @@ def _obter_prompt_final(ad_copy_texto: str) -> str:
     Analise só os primeiros 30 segundos deste anúncio.
     1. Extraia o gancho visual inicial e a fala desses 30 segundos.
     2. Leia a copy abaixo para entender a promessa escrita.
-    3. Proponha um único ângulo de venda, o mais forte.
-
     --- COPY ORIGINAL INTERCEPTADA ---
     {ad_copy_texto}
     ----------------------------------
@@ -966,3 +986,107 @@ def reprocessar_falha_definitiva(
         uso_tokens,
         republicar_falha=False,
     )
+
+
+SQL_OFERTAS_EM_TESTE = """
+SELECT ofertas.id, ofertas.nicho, ofertas.sub_nicho, ofertas.gancho_3s,
+       ofertas.gatilho_mental, ofertas.copy_texto, ofertas.transcricao_video
+FROM ofertas
+JOIN triagem_oferta AS triagem ON triagem.oferta_id = ofertas.id
+WHERE triagem.estado = 'testando'
+  AND ofertas.oferta_canonica_id IS NULL
+  AND ofertas.status_qualificacao = 'concluido'
+  AND (
+    ofertas.angulos_alternativos IS NULL
+    OR ofertas.angulos_alternativos = '[]'::jsonb
+  )
+ORDER BY triagem.atualizado_em, ofertas.id
+LIMIT %(limite)s
+"""
+
+SQL_GRAVAR_ANGULO = """
+UPDATE ofertas
+SET angulos_alternativos = %(angulos)s::jsonb
+WHERE id = %(id)s
+  AND oferta_canonica_id IS NULL
+  AND (
+    angulos_alternativos IS NULL
+    OR angulos_alternativos = '[]'::jsonb
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM triagem_oferta
+    WHERE oferta_id = ofertas.id
+      AND estado = 'testando'
+  )
+"""
+
+
+def _corte(valor: object, limite: int) -> str:
+    return str(valor or "").strip()[:limite]
+
+
+def _texto_do_angulo(oferta: dict) -> str:
+    return (
+        "Gere 1 ângulo de venda, o mais forte, para um teste A/B desta oferta.\n"
+        f"Nicho: {_corte(oferta.get('nicho'), 100)}\n"
+        f"Subnicho: {_corte(oferta.get('sub_nicho'), 100)}\n"
+        f"Gancho: {_corte(oferta.get('gancho_3s'), 500)}\n"
+        f"Gatilho: {_corte(oferta.get('gatilho_mental'), 200)}\n"
+        f"Fala: {_corte(oferta.get('transcricao_video'), 800)}\n"
+        f"Copy: {_corte(oferta.get('copy_texto'), 800)}\n"
+    )
+
+
+def _ofertas_em_teste(cur) -> list[dict]:
+    cur.execute(SQL_OFERTAS_EM_TESTE, {"limite": LOTE_ANGULOS})
+    linhas = cur.fetchall()
+    if not isinstance(linhas, list):
+        return []
+    return [linha for linha in linhas if isinstance(linha, dict)]
+
+
+def _gravar_angulo(conn, oferta_id: int, angulos: list[dict]) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            SQL_GRAVAR_ANGULO,
+            {"id": oferta_id, "angulos": json.dumps(angulos)},
+        )
+        gravou = cur.rowcount == 1
+    conn.commit()
+    return gravou
+
+
+def _gerar_angulo(oferta: dict) -> bool:
+    resposta = cliente_ia.models.generate_content(
+        model=MODELO_ANALISE,
+        contents=_texto_do_angulo(oferta),
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type="application/json",
+            response_schema=GeracaoAnguloSchema,
+            system_instruction="Você propõe um único ângulo de venda para um teste A/B.",
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    gerado = GeracaoAnguloSchema(**json.loads(resposta.text))
+    angulos = [item.model_dump() for item in gerado.angulos_alternativos]
+    with get_pool().connection() as conn:
+        return _gravar_angulo(conn, int(oferta["id"]), angulos)
+
+
+@app.task(name="src.worker_ia.gerar_angulos_em_teste")
+def gerar_angulos_em_teste():
+    """Gera um ângulo só para a oferta canônica marcada como testando."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            ofertas = _ofertas_em_teste(cur)
+        conn.commit()
+    gerados = 0
+    for oferta in ofertas:
+        try:
+            if _gerar_angulo(oferta):
+                gerados += 1
+        except Exception:
+            logger.exception("Falha ao gerar o ângulo da oferta %s.", oferta.get("id"))
+    return {"gerados": gerados, "candidatas": len(ofertas)}

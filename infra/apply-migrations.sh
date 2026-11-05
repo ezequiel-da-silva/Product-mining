@@ -6,8 +6,17 @@ cd "$(dirname "$0")/.."
 user="${POSTGRES_USER:-spy_admin}"
 db="${POSTGRES_DB:-mineracao_fb}"
 
+# No bash do Windows, o docker do Linux não fala com o Rancher e rejeita o -T.
+# O docker.exe é o cliente que enxerga os containers.
+docker_bin=docker
+if ! docker compose version >/dev/null 2>&1; then
+  if command -v docker.exe >/dev/null 2>&1; then
+    docker_bin=docker.exe
+  fi
+fi
+
 psql_exec() {
-  docker compose exec -T postgres \
+  "$docker_bin" compose exec -T postgres \
     psql -v ON_ERROR_STOP=1 \
     --username "$user" \
     --dbname "$db"
@@ -37,11 +46,12 @@ for file in \
   infra/migrations/014_preco_moeda.sql \
   infra/migrations/015_phash_perceptual.sql \
   infra/migrations/016_fadiga_anuncio.sql \
-  infra/migrations/017_custo_modelo_e_vetor_mensal.sql
+  infra/migrations/017_custo_modelo_e_vetor_mensal.sql \
+  infra/migrations/018_preco_pagina_e_grupo.sql
 do
   versao=$(basename "$file" .sql)
   applied=$(
-    docker compose exec -T postgres \
+    "$docker_bin" compose exec -T postgres \
       psql -tA -v ON_ERROR_STOP=1 \
       --username "$user" \
       --dbname "$db" \
