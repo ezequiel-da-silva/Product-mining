@@ -56,7 +56,7 @@ def get_pool() -> ConnectionPool:
             conninfo=conninfo,
             min_size=1,
             max_size=2,
-            kwargs={"row_factory": dict_row},
+            kwargs={"row_factory": dict_row, "prepare_threshold": None},
             open=True,
         )
     return pool_db
@@ -1339,3 +1339,126 @@ def gerar_angulos_em_teste():
         except Exception:
             logger.exception("Falha ao gerar o ângulo da oferta %s.", oferta.get("id"))
     return {"gerados": gerados, "candidatas": len(ofertas)}
+
+
+def _modelo_juiz() -> str | None:
+    nome = os.environ.get("MODELO_JUIZ", "").strip()
+    if not nome or nome == MODELO_ANALISE:
+        return None
+    return nome
+
+
+SQL_AMOSTRA_JUIZ = """
+WITH dia AS (
+    SELECT COUNT(*) AS concluidas
+    FROM ofertas
+    WHERE analise_concluida_em >= date_trunc('day', CURRENT_TIMESTAMP)
+),
+teto AS (
+    SELECT COUNT(*) AS julgadas
+    FROM avaliacao_amostral
+    WHERE criado_em >= date_trunc('day', CURRENT_TIMESTAMP)
+)
+INSERT INTO avaliacao_amostral (oferta_id, nicho_extraido)
+SELECT id, nicho
+FROM ofertas
+WHERE analise_concluida_em >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+  AND nicho IS NOT NULL
+  AND oferta_canonica_id IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM avaliacao_amostral AS existente WHERE existente.oferta_id = ofertas.id
+  )
+  AND random() < 0.02
+  AND (SELECT julgadas FROM teto) < (SELECT concluidas FROM dia) * 0.02
+ORDER BY id
+LIMIT 10
+ON CONFLICT (oferta_id) DO NOTHING
+RETURNING id, oferta_id, nicho_extraido
+"""
+
+
+def _parecer_juiz(modelo: str, nicho: str, gancho: str, fala: str) -> tuple[str | None, str]:
+    resposta = cliente_ia.models.generate_content(
+        model=modelo,
+        contents=(
+            "Julgue só o nicho canônico desta oferta. Não invente fornecedor, COGS nem review.\n"
+            f"Nicho extraído: {nicho}\n"
+            f"Gancho: {gancho[:500]}\n"
+            f"Fala: {fala[:800]}\n"
+            'Responda JSON com as chaves "nicho" e "motivo".'
+        ),
+        config=types.GenerateContentConfig(
+            temperature=0,
+            response_mime_type="application/json",
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    dados = json.loads(getattr(resposta, "text", None) or "")
+    bruto = dados.get("nicho") if isinstance(dados, dict) else None
+    motivo = dados.get("motivo") if isinstance(dados, dict) else ""
+    return nicho_canonico(bruto) if isinstance(bruto, str) else None, str(motivo or "")[:500]
+
+
+def _registrar_parecer(amostra_id: int, nicho_extraido: str, nicho_juiz: str | None, motivo: str) -> None:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE avaliacao_amostral
+                SET nicho_juiz = %(juiz)s,
+                    concorda = %(concorda)s,
+                    motivo = %(motivo)s
+                WHERE id = %(id)s
+                """,
+                {
+                    "id": amostra_id,
+                    "juiz": nicho_juiz,
+                    "concorda": nicho_juiz == nicho_extraido,
+                    "motivo": motivo[:500],
+                },
+            )
+        conn.commit()
+
+
+@app.task(name="src.worker_ia.avaliar_amostra")
+def avaliar_amostra() -> dict:
+    """Amostra até 2% das análises do dia. Sem MODELO_JUIZ distinto, não chama o extrator."""
+    modelo = _modelo_juiz()
+    if modelo is None:
+        return {"status": "sem_juiz"}
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SQL_AMOSTRA_JUIZ)
+            amostra = cur.fetchall()
+        conn.commit()
+    if not isinstance(amostra, list):
+        return {"julgadas": 0}
+    julgadas = 0
+    for linha in amostra:
+        if not isinstance(linha, dict):
+            continue
+        try:
+            with get_pool().connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT gancho_3s, transcricao_video
+                        FROM ofertas
+                        WHERE id = %(id)s
+                        """,
+                        {"id": linha["oferta_id"]},
+                    )
+                    oferta = cur.fetchone()
+            gancho = oferta.get("gancho_3s") if isinstance(oferta, dict) else ""
+            fala = oferta.get("transcricao_video") if isinstance(oferta, dict) else ""
+            nicho_juiz, motivo = _parecer_juiz(
+                modelo,
+                str(linha.get("nicho_extraido") or ""),
+                str(gancho or ""),
+                str(fala or ""),
+            )
+        except Exception as erro:
+            nicho_juiz, motivo = None, f"{type(erro).__name__}: {erro}"[:500]
+        _registrar_parecer(int(linha["id"]), str(linha.get("nicho_extraido") or ""), nicho_juiz, motivo)
+        julgadas += 1
+    return {"julgadas": julgadas}

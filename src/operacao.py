@@ -119,31 +119,68 @@ def coletar_paridade_cambio() -> dict:
     return {"vigencia": vigencia.isoformat(), "linhas": len(linhas), "ofertas": atualizadas}
 
 
+def _loja_configurada() -> bool:
+    return os.environ.get("LOJA_DESTINO", "").strip() == "shopify" and bool(ler_segredo("SHOPIFY_ADMIN_TOKEN").strip())
+
+
+def _reivindicar_eventos(cur) -> list[dict]:
+    cur.execute(
+        """
+        UPDATE integracao_evento
+        SET estado = 'em_envio',
+            atualizado_em = CURRENT_TIMESTAMP
+        WHERE id IN (
+            SELECT id
+            FROM integracao_evento
+            WHERE (estado = 'pendente' AND disponivel_em <= CURRENT_TIMESTAMP)
+               OR (estado = 'em_envio' AND atualizado_em <= CURRENT_TIMESTAMP - INTERVAL '15 minutes')
+            ORDER BY id
+            FOR UPDATE SKIP LOCKED
+            LIMIT %(limite)s
+        )
+        RETURNING id, corpo, tentativas
+        """,
+        {"limite": LIMITE_LOTE},
+    )
+    return _linhas(cur)
+
+
+def _oferta_do_evento(cur, corpo: dict) -> dict:
+    oferta_id = corpo.get("oferta_id")
+    if not isinstance(oferta_id, int) or isinstance(oferta_id, bool):
+        return corpo
+    cur.execute(
+        """
+        SELECT id, nicho, copy_texto, venda_brl, cogs_brl, url_destino, fornecedor_url, provas_sociais
+        FROM ofertas
+        WHERE id = %(id)s
+        """,
+        {"id": oferta_id},
+    )
+    linha = cur.fetchone()
+    if not isinstance(linha, dict):
+        return corpo
+    enriquecido = dict(corpo)
+    enriquecido.update({chave: linha.get(chave) for chave in linha if chave != "id"})
+    enriquecido["oferta_id"] = oferta_id
+    return enriquecido
+
+
 @app.task(name="tasks.lifecycle.enviar_integracao_evento")
 def enviar_integracao_evento() -> dict:
     segredo = ler_segredo("ERP_WEBHOOK_SEGREDO").strip()
     url = ler_segredo("ERP_WEBHOOK_URL").strip()
-    if not segredo or not url:
+    loja = _loja_configurada()
+    if (not segredo or not url) and not loja:
         logger.info("Integração sem ERP_WEBHOOK_SEGREDO ou ERP_WEBHOOK_URL; triagem permanece.")
         return {"enviados": 0, "motivo": "sem_segredo"}
     with _pool().connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, corpo, tentativas
-                FROM integracao_evento
-                WHERE estado = 'pendente'
-                ORDER BY id
-                FOR UPDATE SKIP LOCKED
-                LIMIT %(limite)s
-                """,
-                {"limite": LIMITE_LOTE},
-            )
-            lote = _linhas(cur)
+            lote = _reivindicar_eventos(cur)
         conn.commit()
     enviados = 0
     for linha in lote:
-        if _postar_evento(url, segredo, linha):
+        if _postar_evento(url, segredo, linha, loja):
             enviados += 1
     return {"enviados": enviados, "lidos": len(lote)}
 
@@ -272,8 +309,49 @@ def _preencher_brl_pendente(cur) -> int:
     return total
 
 
-def _postar_evento(url: str, segredo: str, linha: dict) -> bool:
+def _lembrar_corpo(evento_id: int, corpo: dict) -> None:
+    with _pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE integracao_evento
+                SET corpo = %(corpo)s::jsonb,
+                    atualizado_em = CURRENT_TIMESTAMP
+                WHERE id = %(id)s
+                """,
+                {"id": evento_id, "corpo": json.dumps(corpo, default=str)},
+            )
+        conn.commit()
+
+
+def _enriquecer(evento_id: int, corpo: dict, loja: bool) -> dict:
+    with _pool().connection() as conn:
+        with conn.cursor() as cur:
+            enriquecido = _oferta_do_evento(cur, corpo)
+        conn.commit()
+    if not loja or enriquecido.get("loja_produto_id"):
+        return enriquecido
+    from src.loja import rascunho_shopify
+
+    identificador = rascunho_shopify(enriquecido)
+    if not identificador:
+        raise RuntimeError("rascunho da loja não foi criado")
+    enriquecido["loja_produto_id"] = identificador
+    _lembrar_corpo(evento_id, enriquecido)
+    return enriquecido
+
+
+def _postar_evento(url: str, segredo: str, linha: dict, loja: bool = False) -> bool:
     corpo = linha.get("corpo") if isinstance(linha.get("corpo"), dict) else {"oferta_id": None}
+    try:
+        corpo = _enriquecer(int(linha["id"]), corpo, loja)
+    except Exception:
+        logger.exception("Falha ao montar o evento %s.", linha.get("id"))
+        _falha_transporte(int(linha["id"]))
+        return False
+    if not url or not segredo:
+        _marcar_enviado(int(linha["id"]), corpo)
+        return True
     payload = json.dumps(corpo, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     assinatura = hmac.new(segredo.encode(), payload, hashlib.sha256).hexdigest()
     try:
@@ -290,7 +368,7 @@ def _postar_evento(url: str, segredo: str, linha: dict) -> bool:
     if resposta.status_code >= 400 or resposta.is_redirect:
         _falha_transporte(int(linha["id"]))
         return False
-    _marcar_enviado(int(linha["id"]))
+    _marcar_enviado(int(linha["id"]), corpo)
     return True
 
 
@@ -301,6 +379,8 @@ def _falha_transporte(evento_id: int) -> None:
                 """
                 UPDATE integracao_evento
                 SET tentativas = tentativas + 1,
+                    atualizado_em = CURRENT_TIMESTAMP,
+                    disponivel_em = CURRENT_TIMESTAMP + (INTERVAL '30 seconds' * power(2, tentativas)),
                     estado = CASE WHEN tentativas + 1 >= 3 THEN 'esgotada' ELSE 'pendente' END
                 WHERE id = %(id)s
                 """,
@@ -309,16 +389,18 @@ def _falha_transporte(evento_id: int) -> None:
         conn.commit()
 
 
-def _marcar_enviado(evento_id: int) -> None:
+def _marcar_enviado(evento_id: int, corpo: dict | None = None) -> None:
     with _pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE integracao_evento
                 SET estado = 'enviado',
-                    enviado_em = CURRENT_TIMESTAMP
+                    enviado_em = CURRENT_TIMESTAMP,
+                    atualizado_em = CURRENT_TIMESTAMP,
+                    corpo = COALESCE(%(corpo)s::jsonb, corpo)
                 WHERE id = %(id)s
                 """,
-                {"id": evento_id},
+                {"id": evento_id, "corpo": json.dumps(corpo, default=str) if corpo else None},
             )
         conn.commit()

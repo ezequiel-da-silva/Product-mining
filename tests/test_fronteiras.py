@@ -40,7 +40,9 @@ def test_shopify_sem_moeda_permanece_ausente(monkeypatch):
 
     html = _pagina("<p>sem preço visível nesta vitrine grande o bastante</p>")
     monkeypatch.setattr(
-        landing, "buscar_html", lambda url: html if "myshopify" in url and not url.endswith(".js") else '{"price":4990}'
+        landing,
+        "buscar_html",
+        lambda url, _tentativa=0: html if "myshopify" in url and not url.endswith(".js") else '{"price":4990}',
     )
 
     leitura = landing.avaliar_destino("https://loja.myshopify.com/products/camiseta")
@@ -54,7 +56,7 @@ def test_shopify_com_moeda_entra_em_centavos(monkeypatch):
 
     html = _pagina("<p>sem preço visível nesta vitrine grande o bastante</p>")
 
-    def html_de(url: str):
+    def html_de(url: str, _tentativa: int = 0):
         if url.endswith(".js"):
             return '{"price":4990,"currency":"BRL"}'
         return html

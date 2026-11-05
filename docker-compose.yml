@@ -1,5 +1,7 @@
 networks:
-  spy_network:
+  dados:
+    internal: true
+  borda:
     driver: bridge
 volumes:
   postgres_data:
@@ -25,7 +27,8 @@ services:
       - ./infra/init-pipeline-role.sh:/docker-entrypoint-initdb.d/zz-pipeline-role.sh:ro
       - ./infra/init-lifecycle-role.sh:/docker-entrypoint-initdb.d/zz-lifecycle-role.sh:ro
     networks:
-      - spy_network
+      - dados
+      - borda
     security_opt:
       - no-new-privileges:true
     deploy:
@@ -52,7 +55,7 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - spy_network
+      - dados
     security_opt:
       - no-new-privileges:true
     deploy:
@@ -65,6 +68,27 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.22.0
+    container_name: spy_pgbouncer
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/pgbouncer-entrypoint.sh"]
+    volumes:
+      - ./infra/pgbouncer-entrypoint.sh:/opt/pgbouncer-entrypoint.sh:ro
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-mineracao_fb}
+      - PIPELINE_DB_PASSWORD=${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}
+      - LIFECYCLE_DB_PASSWORD=${LIFECYCLE_DB_PASSWORD:?LIFECYCLE_DB_PASSWORD is required}
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=400
+      - DEFAULT_POOL_SIZE=20
+    tmpfs:
+      - /tmp:rw,size=32m,mode=1777
+    networks:
+      - dados
+    depends_on:
+      postgres:
+        condition: service_healthy
   ad-producer:
     build:
       context: .
@@ -93,12 +117,13 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    networks:
+      - dados
+      - borda
     extra_hosts:
       # Rancher no Windows: host-gateway é a bridge interna (172.17.0.1), onde o Chrome não escuta.
       # CDP_BRIDGE_IP é o adaptador vEthernet (WSL); a ponte em infra/cdp-bridge.ps1 entrega ao 127.0.0.1.
       - "host.docker.internal:${CDP_BRIDGE_IP:?CDP_BRIDGE_IP is required}"
-    networks:
-      - spy_network
   worker-qualification:
     build:
       context: .
@@ -122,7 +147,7 @@ services:
           memory: 1G
     environment:
       - CELERY_INCLUDE=src.worker_qualification
-      - POSTGRES_URL=postgresql://pipeline_writer:${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-mineracao_fb}
+      - POSTGRES_URL=postgresql://pipeline_writer:${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}@pgbouncer:6432/${POSTGRES_DB:-mineracao_fb}
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       - CLOUDFLARE_R2_ACCOUNT_ID=${CLOUDFLARE_R2_ACCOUNT_ID}
       - CLOUDFLARE_R2_ACCESS_KEY=${CLOUDFLARE_R2_ACCESS_KEY}
@@ -131,13 +156,17 @@ services:
       - CLOUDFLARE_R2_PUBLIC_URL=${CLOUDFLARE_R2_PUBLIC_URL}
       - CLOUDFLARE_R2_ACCESS_KEY_PROXIMO=${CLOUDFLARE_R2_ACCESS_KEY_PROXIMO:-}
       - CLOUDFLARE_R2_SECRET_KEY_PROXIMO=${CLOUDFLARE_R2_SECRET_KEY_PROXIMO:-}
+      - EGRESS_PROXIES=${EGRESS_PROXIES:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
     networks:
-      - spy_network
+      - dados
+      - borda
   worker-ia:
     build:
       context: .
@@ -162,7 +191,7 @@ services:
           memory: 2G
     environment:
       - CELERY_INCLUDE=src.worker_ia
-      - POSTGRES_URL=postgresql://pipeline_writer:${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-mineracao_fb}
+      - POSTGRES_URL=postgresql://pipeline_writer:${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}@pgbouncer:6432/${POSTGRES_DB:-mineracao_fb}
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - CLOUDFLARE_R2_ACCOUNT_ID=${CLOUDFLARE_R2_ACCOUNT_ID}
@@ -172,13 +201,17 @@ services:
       - CLOUDFLARE_R2_PUBLIC_URL=${CLOUDFLARE_R2_PUBLIC_URL}
       - CLOUDFLARE_R2_ACCESS_KEY_PROXIMO=${CLOUDFLARE_R2_ACCESS_KEY_PROXIMO:-}
       - CLOUDFLARE_R2_SECRET_KEY_PROXIMO=${CLOUDFLARE_R2_SECRET_KEY_PROXIMO:-}
+      - MODELO_JUIZ=${MODELO_JUIZ:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
     networks:
-      - spy_network
+      - dados
+      - borda
   celery-beat:
     build:
       context: .
@@ -202,7 +235,7 @@ services:
           memory: 256M
     environment:
       - CELERY_INCLUDE=src.lifecycle
-      - POSTGRES_URL=postgresql://lifecycle_writer:${LIFECYCLE_DB_PASSWORD:?LIFECYCLE_DB_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-mineracao_fb}
+      - POSTGRES_URL=postgresql://lifecycle_writer:${LIFECYCLE_DB_PASSWORD:?LIFECYCLE_DB_PASSWORD is required}@pgbouncer:6432/${POSTGRES_DB:-mineracao_fb}
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       - CLOUDFLARE_R2_ACCOUNT_ID=${CLOUDFLARE_R2_ACCOUNT_ID}
       - CLOUDFLARE_R2_ACCESS_KEY=${CLOUDFLARE_R2_ACCESS_KEY}
@@ -211,13 +244,22 @@ services:
       - CLOUDFLARE_R2_PUBLIC_URL=${CLOUDFLARE_R2_PUBLIC_URL}
       - CLOUDFLARE_R2_ACCESS_KEY_PROXIMO=${CLOUDFLARE_R2_ACCESS_KEY_PROXIMO:-}
       - CLOUDFLARE_R2_SECRET_KEY_PROXIMO=${CLOUDFLARE_R2_SECRET_KEY_PROXIMO:-}
+      - LOJA_DESTINO=${LOJA_DESTINO:-}
+      - MARKUP_BRL=${MARKUP_BRL:-1.00}
+      - SHOPIFY_ADMIN_TOKEN=${SHOPIFY_ADMIN_TOKEN:-}
+      - LOJA_SHOPIFY_DOMINIO=${LOJA_SHOPIFY_DOMINIO:-}
+      - ERP_WEBHOOK_URL=${ERP_WEBHOOK_URL:-}
+      - ERP_WEBHOOK_SEGREDO=${ERP_WEBHOOK_SEGREDO:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      pgbouncer:
+        condition: service_started
     networks:
-      - spy_network
+      - dados
+      - borda
   dashboard-ui:
     build:
       context: .
@@ -257,7 +299,7 @@ services:
       postgres:
         condition: service_healthy
     networks:
-      - spy_network
+      - borda
   flower:
     image: mher/flower:2.0
     container_name: spy_flower
@@ -284,4 +326,4 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - spy_network
+      - dados

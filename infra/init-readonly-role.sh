@@ -60,6 +60,9 @@ BEGIN
   IF to_regclass('public.integracao_evento_id_seq') IS NOT NULL THEN
     GRANT USAGE, SELECT ON SEQUENCE integracao_evento_id_seq TO streamlit_readonly;
   END IF;
+  IF to_regclass('public.avaliacao_amostral') IS NOT NULL THEN
+    GRANT SELECT ON TABLE avaliacao_amostral TO streamlit_readonly;
+  END IF;
 END $$;
 
 DO $$

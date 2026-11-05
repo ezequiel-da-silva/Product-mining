@@ -34,6 +34,8 @@ app.conf.update(
         "tasks.lifecycle.coletar_paridade_cambio": {"queue": "lifecycle_queue"},
         "tasks.lifecycle.enviar_integracao_evento": {"queue": "lifecycle_queue"},
         "tasks.lifecycle.manter_particoes_oferta_vetor": {"queue": "lifecycle_queue"},
+        "tasks.qualification.revisar_fornecedores": {"queue": "qualification_queue"},
+        "src.worker_ia.avaliar_amostra": {"queue": "ai_multimodal_queue"},
     },
     beat_schedule={
         "expirar-ofertas-fracas": {
@@ -67,6 +69,14 @@ app.conf.update(
         "manter-particoes-oferta-vetor": {
             "task": "tasks.lifecycle.manter_particoes_oferta_vetor",
             "schedule": crontab(hour=2, minute=30),
+        },
+        "revisar-fornecedores": {
+            "task": "tasks.qualification.revisar_fornecedores",
+            "schedule": crontab(hour=8, minute=30),
+        },
+        "avaliar-amostra-ia": {
+            "task": "src.worker_ia.avaliar_amostra",
+            "schedule": crontab(minute="*/5"),
         },
     },
     worker_prefetch_multiplier=1,

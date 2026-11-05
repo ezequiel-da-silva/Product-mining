@@ -87,7 +87,13 @@ GRANT UPDATE (
     venda_brl,
     cogs_brl,
     paridade_vigencia,
-    paridade_fonte
+    paridade_fonte,
+    legenda_queimada,
+    cortes_por_segundo,
+    fingerprint_audio,
+    proxima_consulta_em,
+    fornecedor_revisado_em,
+    fornecedor_status
 ) ON TABLE ofertas TO pipeline_writer;
 
 DO $$
@@ -115,6 +121,13 @@ BEGIN
   END IF;
   IF to_regclass('public.paridade_cambio') IS NOT NULL THEN
     GRANT SELECT ON TABLE paridade_cambio TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.avaliacao_amostral') IS NOT NULL THEN
+    GRANT SELECT, INSERT ON TABLE avaliacao_amostral TO pipeline_writer;
+    GRANT UPDATE (nicho_juiz, concorda, motivo) ON TABLE avaliacao_amostral TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.avaliacao_amostral_id_seq') IS NOT NULL THEN
+    GRANT USAGE, SELECT ON SEQUENCE avaliacao_amostral_id_seq TO pipeline_writer;
   END IF;
 END $$;
 

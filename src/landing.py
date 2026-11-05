@@ -3,6 +3,7 @@
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
 from dataclasses import dataclass
@@ -18,6 +19,9 @@ MAX_BYTES = 1_000_000
 MAX_REDIRECIONAMENTOS = 3
 PRECO_MAXIMO = Decimal("1000000")
 TIMEOUT = (3, 5)
+HOSTS_SEM_PROXY = frozenset({"olinda.bcb.gov.br", "economia.awesomeapi.com.br"})
+_CURL: tuple[object, object] | None = None
+_CURL_TENTADO = False
 _JSON_LD = re.compile(
     r"<script[^>]*type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
@@ -141,7 +145,87 @@ class _AdaptadorIpFixo(requests.adapters.HTTPAdapter):
         )
 
 
-def _abrir_pagina(url: str, hostname: str, ip: str) -> requests.Response:
+def _proxies_egress() -> list[str]:
+    bruto = os.environ.get("EGRESS_PROXIES", "")
+    return [item.strip() for item in bruto.split(",") if item.strip().startswith(("http://", "https://"))]
+
+
+def _proxy_para(hostname: str, tentativa: int) -> str | None:
+    if hostname in HOSTS_SEM_PROXY:
+        return None
+    proxies = _proxies_egress()
+    if not proxies:
+        return None
+    return proxies[(sum(hostname.encode()) + tentativa) % len(proxies)]
+
+
+def mapa_resolve(hostname: str, url: str, ip: str) -> dict[str, str]:
+    """libcurl exige HOST:PORT. A porta fica na chave, o IP no valor."""
+    partes = urlsplit(url)
+    if partes.port:
+        porta = partes.port
+    elif url.startswith("https"):
+        porta = 443
+    else:
+        porta = 80
+    return {f"{hostname}:{porta}": ip}
+
+
+def _entradas_libcurl(mapa: dict[str, str]) -> list[str]:
+    return [f"{chave}:{endereco}" for chave, endereco in mapa.items()]
+
+
+def _modulo_curl() -> tuple[object, object] | None:
+    global _CURL, _CURL_TENTADO
+    if _CURL_TENTADO:
+        return _CURL
+    _CURL_TENTADO = True
+    try:
+        from curl_cffi import CurlOpt
+        from curl_cffi import requests as curl
+    except ImportError:
+        _CURL = None
+    else:
+        _CURL = (curl, CurlOpt)
+    return _CURL
+
+
+def _cabecalhos_navegacao() -> dict[str, str]:
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Sec-CH-UA": '"Chromium";v="131", "Not_A Brand";v="24"',
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"Windows"',
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+
+def _abrir_chrome(url: str, hostname: str, ip: str, proxy: str | None):
+    modulo = _modulo_curl()
+    if modulo is None:
+        raise RuntimeError("curl_cffi ausente")
+    curl, curl_opt = modulo
+    mapa = mapa_resolve(hostname, url, ip)
+    opcoes = {curl_opt.RESOLVE: _entradas_libcurl(mapa)}
+    pedido = {
+        "impersonate": "chrome",
+        "timeout": 5,
+        "allow_redirects": False,
+        "stream": True,
+        "headers": _cabecalhos_navegacao(),
+        "curl_options": opcoes,
+    }
+    if proxy:
+        pedido["proxy"] = proxy
+    return curl.get(url, **pedido)
+
+
+def _abrir_requests(url: str, hostname: str, ip: str) -> requests.Response:
     """Abre o socket no IP já validado e mantém o SNI/Host do nome original."""
     sessao = requests.Session()
     sessao.trust_env = False
@@ -169,6 +253,15 @@ def _abrir_pagina(url: str, hostname: str, ip: str) -> requests.Response:
 
     resposta.close = fechar  # type: ignore[method-assign]
     return resposta
+
+
+def _abrir_pagina(url: str, hostname: str, ip: str, tentativa: int = 0):
+    proxy = _proxy_para(hostname, tentativa)
+    if _modulo_curl() is not None:
+        return _abrir_chrome(url, hostname, ip, proxy)
+    if proxy:
+        logger.info("Proxy de egress ignorado: curl_cffi ausente.")
+    return _abrir_requests(url, hostname, ip)
 
 
 def _parece_ip(hostname: str) -> bool:
@@ -325,7 +418,7 @@ def _ler_corpo(resposta: requests.Response) -> str | None:
     return b"".join(pedacos).decode("utf-8", errors="replace")
 
 
-def buscar_html(url: str) -> str | None:
+def buscar_html(url: str, tentativa: int = 0) -> str | None:
     """Lê o HTML no IP já validado. Recusa rede local e não segue redirect às cegas."""
     atual = url
     for _ in range(MAX_REDIRECIONAMENTOS + 1):
@@ -337,8 +430,8 @@ def buscar_html(url: str) -> str | None:
             logger.info("Página recusada por host não público.")
             return None
         try:
-            resposta = _abrir_pagina(atual, partes.hostname, ips[0])
-        except requests.RequestException:
+            resposta = _abrir_pagina(atual, partes.hostname, ips[0], tentativa)
+        except Exception:
             logger.info("Falha ao ler a página.")
             return None
         try:
@@ -356,6 +449,25 @@ def buscar_html(url: str) -> str | None:
         finally:
             resposta.close()
     return None
+
+
+def codigo_http(url: str) -> int | None:
+    """Status da URL, sem corpo. 404 e 410 do fornecedor usam este caminho."""
+    partes = urlsplit(url)
+    if partes.scheme not in {"http", "https"} or not partes.hostname:
+        return None
+    ips = resolver_publico(partes.hostname)
+    if not ips:
+        return None
+    try:
+        resposta = _abrir_pagina(url, partes.hostname, ips[0])
+    except Exception:
+        logger.info("Falha ao ler o status da página.")
+        return None
+    try:
+        return int(resposta.status_code)
+    finally:
+        resposta.close()
 
 
 def buscar_preco(url: str) -> PrecoLido | None:
@@ -507,10 +619,25 @@ def _shopify_quando_falha(url: str, leitura: LeituraPagina) -> LeituraPagina:
     return LeituraPagina("shopify_json", preco)
 
 
+def _rodadas_egress(url: str) -> int:
+    host = urlsplit(url).hostname or ""
+    if host in HOSTS_SEM_PROXY:
+        return 1
+    return max(1, len(_proxies_egress()))
+
+
 def avaliar_destino(url: str) -> LeituraPagina:
     """Classifica a página. Shopify .js só entra se a página veio ausente ou bloqueada."""
     if not isinstance(url, str) or not url.strip():
         return LeituraPagina("ausente")
-    corpo = buscar_html(url.strip())
-    leitura = classificar_pagina(corpo) if isinstance(corpo, str) else LeituraPagina("bloqueado")
-    return _shopify_quando_falha(url.strip(), leitura)
+    endereco = url.strip()
+    leitura = LeituraPagina("bloqueado")
+    for tentativa in range(_rodadas_egress(endereco)):
+        corpo = buscar_html(endereco, tentativa)
+        if not isinstance(corpo, str):
+            leitura = LeituraPagina("bloqueado")
+            continue
+        leitura = classificar_pagina(corpo)
+        if leitura.origem != "bloqueado":
+            break
+    return _shopify_quando_falha(endereco, leitura)
