@@ -17,3 +17,4 @@ A nossa equipa irá responder num prazo de 48 horas e trabalhar para resolver o 
 - Utilizamos o `Bandit` no nosso CI para análise estática de código Python.
 - Bloqueamos commits que contenham chaves privadas usando hooks pré-commit.
 - O painel grava só a triagem do analista (`triagem_oferta`). Nas demais tabelas, `streamlit_readonly` permanece em leitura (`SELECT`).
+- A busca de fornecedor abre só `http` ou `https` em host público, no IP já resolvido, e não segue redirect para rede local. Foto de depoimento com esquema `javascript:` ou IP privado não é exibida.

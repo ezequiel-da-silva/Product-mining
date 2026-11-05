@@ -75,16 +75,23 @@ def _close_db_pool(**_kwargs):
 
 
 PERSONA_PATH = os.path.join(BASE_DIR, "prompts", "system_persona.yaml")
+ANGULO_PATH = os.path.join(BASE_DIR, "prompts", "angulo_ab.jinja")
 instrucao_sistema = (
     "Você é um estrategista de tráfego pago nível Doutor. "
     "Extraia informações de VSLs e anúncios com precisão cirúrgica."
 )
+instrucao_angulo = "Você propõe um único ângulo de venda para um teste A/B."
 
 if os.path.exists(PERSONA_PATH):
     try:
         with open(PERSONA_PATH, "r", encoding="utf-8") as f:
             config_persona = yaml.safe_load(f)
-            instrucao_sistema = config_persona.get("instruction", instrucao_sistema)
+            lida = config_persona.get("instruction")
+            if isinstance(lida, str) and lida.strip():
+                instrucao_sistema = lida.strip()
+            lida_angulo = config_persona.get("angulo_instruction")
+            if isinstance(lida_angulo, str) and lida_angulo.strip():
+                instrucao_angulo = lida_angulo.strip()
     except Exception as e:
         logger.warning(f"Falha ao ler {PERSONA_PATH}, usando instrução padrão: {e}")
 
@@ -815,16 +822,18 @@ def _obter_prompt_final(ad_copy_texto: str) -> str:
             template = Template(f.read())
         return template.render(ad_copy_texto=ad_copy_texto)
 
-    return f"""
-    Analise só os primeiros 30 segundos deste anúncio.
-    1. Extraia o gancho visual inicial e a fala desses 30 segundos.
-    2. Leia a copy abaixo para entender a promessa escrita.
-    --- COPY ORIGINAL INTERCEPTADA ---
-    {ad_copy_texto}
-    ----------------------------------
-
-    Responda conforme o schema JSON solicitado.
-    """
+    return (
+        "Analise só os primeiros 30 segundos deste anúncio.\n"
+        "1. Extraia o gancho visual dos 3 primeiros segundos e a fala desses 30 segundos.\n"
+        "2. Leia a copy abaixo para entender a promessa escrita.\n"
+        "3. Classifique o nicho com um nome do catálogo. Fora de Outros, deixe sub_nicho nulo.\n"
+        "4. Preencha preço só com moeda BRL ou USD dita no vídeo ou na copy.\n"
+        "5. A margem é estimativa de sourcing na China. Não preencha fornecedor, COGS nem review.\n"
+        "--- COPY ORIGINAL INTERCEPTADA ---\n"
+        f"{ad_copy_texto}\n"
+        "----------------------------------\n"
+        "Responda conforme o schema JSON solicitado.\n"
+    )
 
 
 def _token_da_reserva(task, oferta_id: int) -> str | dict:
@@ -1026,16 +1035,35 @@ def _corte(valor: object, limite: int) -> str:
     return str(valor or "").strip()[:limite]
 
 
-def _texto_do_angulo(oferta: dict) -> str:
+def _campos_do_angulo(oferta: dict) -> dict:
+    return {
+        "nicho": _corte(oferta.get("nicho"), 100),
+        "sub_nicho": _corte(oferta.get("sub_nicho"), 100),
+        "gancho": _corte(oferta.get("gancho_3s"), 500),
+        "gatilho": _corte(oferta.get("gatilho_mental"), 200),
+        "fala": _corte(oferta.get("transcricao_video"), 800),
+        "copy": _corte(oferta.get("copy_texto"), 800),
+    }
+
+
+def _texto_angulo_padrao(campos: dict) -> str:
     return (
         "Gere 1 ângulo de venda, o mais forte, para um teste A/B desta oferta.\n"
-        f"Nicho: {_corte(oferta.get('nicho'), 100)}\n"
-        f"Subnicho: {_corte(oferta.get('sub_nicho'), 100)}\n"
-        f"Gancho: {_corte(oferta.get('gancho_3s'), 500)}\n"
-        f"Gatilho: {_corte(oferta.get('gatilho_mental'), 200)}\n"
-        f"Fala: {_corte(oferta.get('transcricao_video'), 800)}\n"
-        f"Copy: {_corte(oferta.get('copy_texto'), 800)}\n"
+        f"Nicho: {campos['nicho']}\n"
+        f"Subnicho: {campos['sub_nicho']}\n"
+        f"Gancho: {campos['gancho']}\n"
+        f"Gatilho: {campos['gatilho']}\n"
+        f"Fala: {campos['fala']}\n"
+        f"Copy: {campos['copy']}\n"
     )
+
+
+def _texto_do_angulo(oferta: dict) -> str:
+    campos = _campos_do_angulo(oferta)
+    if os.path.exists(ANGULO_PATH):
+        with open(ANGULO_PATH, encoding="utf-8") as arquivo:
+            return Template(arquivo.read()).render(**campos)
+    return _texto_angulo_padrao(campos)
 
 
 def _ofertas_em_teste(cur) -> list[dict]:
@@ -1065,7 +1093,7 @@ def _gerar_angulo(oferta: dict) -> bool:
             temperature=0.2,
             response_mime_type="application/json",
             response_schema=GeracaoAnguloSchema,
-            system_instruction="Você propõe um único ângulo de venda para um teste A/B.",
+            system_instruction=instrucao_angulo,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )

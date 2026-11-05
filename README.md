@@ -1,13 +1,13 @@
 # Minerador de Produtos Avançado (Facebook Ads) 🚀
 
-Este projeto é uma arquitetura de nível Enterprise para extração, qualificação, enriquecimento e armazenamento de anúncios validados do Facebook Ads. Utiliza microsserviços, inteligência artificial multimodal (Gemini 2.5 Flash), fila de tarefas assíncronas e busca vetorial (HNSW) para criar um SaaS autônomo e resiliente.
+Este projeto é uma arquitetura de nível Enterprise para extração, qualificação, enriquecimento e armazenamento de anúncios validados do Facebook Ads. Utiliza microsserviços, inteligência artificial multimodal (Gemini 3.8 Flash e `gemini-embedding-2`), fila de tarefas assíncronas e busca vetorial (HNSW) para criar um SaaS autônomo e resiliente.
 
 ## 🏗️ Arquitetura e Stack Tecnológico
 
 - **Producer (Extrator):** Python + Playwright conectado via CDP a navegadores Anti-Detect. Interceptação direta de tráfego GraphQL (Zero Fingerprint) e mascaramento de automação (`playwright-stealth`).
 - **Message Broker:** Redis 7 + Celery para roteamento estrito e concorrência balanceada. Monitoramento via Flower.
 - **Storage Relacional e Vetorial:** PostgreSQL 16 com extensão `pgvector` e busca otimizada HNSW.
-- **Workers:** Segregação entre qualificação de rotas (APIs) e Worker Multimodal (Gemini AI + Jinja2 para templates de prompts).
+- **Workers:** Qualificação, página de destino, agrupamento, busca de fornecedor, worker multimodal (Gemini + Jinja2) e ciclo de vida noturno.
 - **CDN Privada:** Cloudflare R2 atuando como intermediário para evitar perda de mídia ("Link Rot") da Meta.
 - **Frontend / RAG:** Interface analítica reativa em Streamlit conectada a uma role `readonly` no banco, prevenindo injeções Text-to-SQL.
 - **DevSecOps & Qualidade:** Hooks de pré-commit (`pre-commit`), Linter ultra-rápido (`Ruff`), análise estática de segurança (`Bandit`) e testes unitários (`pytest`).
@@ -23,14 +23,20 @@ product_mining/
 │   ├── producer.Dockerfile    # Imagem do serviço de extração (Playwright)
 │   ├── streamlit.Dockerfile   # Imagem do painel analítico
 │   └── worker.Dockerfile      # Imagem base para os workers de IA e Qualificação
-├── docs/                      # Documentação de Arquitetura (SDD), Acessibilidade e Avaliação de Agentes
+├── docs/                      # SDD, skills da IA, acessibilidade e avaliação do agente
 ├── infra/
-│   └── init-db.sql            # DDL do PostgreSQL, índices pgvector e RBAC
-├── prompts/                   # Templates e versionamento de instruções da IA (LLMOps)
+│   ├── init-db.sql            # DDL do PostgreSQL, índices pgvector e RBAC
+│   └── migrations/            # Migrações idempotentes aplicadas por apply-migrations.sh
+├── prompts/                   # Skills do Gemini: persona, extração e ângulo A/B
 ├── src/
-│   ├── producer.py            # Script principal de interceptação via Playwright
-│   ├── worker_ia.py           # Worker que consome o Gemini e Cloudflare R2
-│   └── dashboard.py           # Frontend em Streamlit
+│   ├── producer.py            # Interceptação via Playwright CDP
+│   ├── worker_qualification.py
+│   ├── worker_ia.py           # Gemini, embedding e ângulo de teste
+│   ├── landing.py             # Preço público da página de destino
+│   ├── agrupamento.py         # Criativos do mesmo produto
+│   ├── sourcing.py            # COGS por busca reversa de imagem
+│   ├── provas_sociais.py      # Depoimentos de 5 estrelas
+│   └── dashboard.py           # Painel Streamlit
 ├── tests/                     # Suite de testes unitários (pytest)
 ├── .env.example               # Template das variáveis de ambiente
 ├── .pre-commit-config.yaml    # Configuração de ganchos de segurança e formatação
@@ -176,7 +182,7 @@ O comando preserva `postgres_data`. Ele registra as versões novas e, se a migra
 ainda não tiver sido gravada, corrige status, score, margem e preço inválidos antes de criar
 as constraints. A migração `006` concede `DELETE` em `ofertas` ao papel `pipeline_writer`; a
 migração `009` revoga esse `DELETE`, pois a partir dela só o `lifecycle_writer` apaga linhas
-(veja "Papel `lifecycle_writer` em um volume já existente" acima).
+(veja "Papel `lifecycle_writer` em um volume já existente" acima). A migração `019` acrescenta COGS, fornecedor e provas sociais; o detalhe está em "Preço da página, grupo e fornecedor".
 
 ## Ofertas com o mesmo vídeo
 
@@ -204,6 +210,16 @@ WHERE copia.status_qualificacao = 'concluido'
       AND (origem.url_video_r2 = copia.url_video_r2 OR origem.phash_criativo = copia.phash_criativo)
   );"
 ```
+
+## Preço da página, grupo e fornecedor
+
+A página de destino desta oferta é a fonte do preço de venda. A leitura aceita BRL ou USD e descarta valor ambíguo. O preço da irmã não é copiado.
+
+Criativos do mesmo produto formam um grupo. A oferta mais antiga é a canônica (`oferta_canonica_id` nulo) e as outras apontam para ela. A triagem do grupo fica na canônica.
+
+A revisão que roda a cada dois minutos também busca o fornecedor de até cinco canônicas que já tiveram o preço consultado. A imagem do criativo, ou a `og:image` da loja, vai para a busca pública do 1688 (CNY) e do AliExpress (USD). O 1688 prevalece. A página escolhida contribui com até cinco depoimentos de nota 5. A margem do modelo só vira cálculo quando a moeda da venda é a mesma do COGS. O contrato dessas etapas está em `docs/SKILLS_IA.md` e `docs/SDD.md`.
+
+Em um volume que já existe, a migração `019_cogs_fornecedor_e_provas` cria essas colunas. Rode `./infra/apply-migrations.sh` antes de subir o worker novo.
 
 ## Expiração de ofertas fracas
 

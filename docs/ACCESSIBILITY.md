@@ -19,7 +19,8 @@ Cada oferta concluída é um card com:
 
 - nicho
 - preço, ou "Dados comerciais ausentes"
-- margem em texto (alta, média, baixa ou não identificada), o badge **Estimativa Sourcing (China)** e a legenda de que o número é markup padrão, não conciliação fiscal
+- margem em texto (alta, média, baixa ou não identificada). Quando a venda e o COGS estão na mesma moeda, o badge é **COGS 1688** ou **COGS AliExpress**. Nos outros casos o badge continua **Estimativa Sourcing (China)**, com a legenda de que o número é markup padrão, não conciliação fiscal, e o valor do COGS aparece ao lado quando existe
+- a contagem de depoimentos de 5 estrelas, quando a oferta tem prova social
 - pontuação em escala de 100
 - data da última captura
 - gancho curto
@@ -44,6 +45,7 @@ O título do diálogo é o mesmo texto do botão que o abriu (`Ver detalhes da o
 - O gancho, a copy, as objeções e os ângulos permanecem no mesmo diálogo.
 - A loja abre em nova aba com `rel="noopener noreferrer"`.
 - Destino `http://` mostra o aviso de tráfego sem criptografia em domínio externo.
+- O bloco **Fornecedor** mostra o COGS em texto, cada depoimento em texto e a foto do cliente ao lado. O link **Abrir fornecedor** usa o mesmo `rel="noopener noreferrer"`.
 
 ## Texto
 

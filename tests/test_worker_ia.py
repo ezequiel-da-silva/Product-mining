@@ -34,7 +34,10 @@ with (
         _baixar_video_temporario,
         _enquadrar_nicho,
         _hash_texto_embedding,
+        _texto_do_angulo,
         _texto_embedding,
+        instrucao_angulo,
+        instrucao_sistema,
         persistir_resultado_ia,
     )
 
@@ -937,6 +940,30 @@ def test_angulo_nao_chama_o_modelo_sem_oferta_em_teste(monkeypatch):
     assert "ofertas.oferta_canonica_id IS NULL" in consulta
     assert "angulos_alternativos = '[]'::jsonb" in consulta
     gerar.assert_not_called()
+
+
+def test_skills_carregam_persona_e_o_template_do_angulo():
+    import inspect
+
+    import src.worker_ia as worker
+
+    assert "Outros" in instrucao_sistema
+    assert "BRL ou USD" in instrucao_sistema
+    assert "nem fornecedor" in instrucao_angulo
+    texto = _texto_do_angulo(
+        {
+            "nicho": "Casa",
+            "sub_nicho": "",
+            "gancho_3s": "Gancho",
+            "gatilho_mental": "Urgência",
+            "transcricao_video": "Fala",
+            "copy_texto": "Copy",
+        }
+    )
+    assert "Nicho: Casa" in texto
+    assert "Gancho: Gancho" in texto
+    assert "Copy: Copy" in texto
+    assert "system_instruction=instrucao_angulo" in inspect.getsource(worker._gerar_angulo)
 
 
 def test_embedding_novo_guarda_tokens_para_o_custo(monkeypatch):

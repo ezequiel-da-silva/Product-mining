@@ -14,6 +14,10 @@ Tipos permitidos:
 - `refactor:` Mudança no código que não corrige um bug nem adiciona uma funcionalidade.
 - `chore:` Atualizações de tarefas de build, gestores de pacotes, etc.
 
+## Skills da IA
+
+Mudança em `AnaliseAnuncioSchema` ou `GeracaoAnguloSchema` atualiza junto o prompt em `prompts/` e o texto em `docs/SKILLS_IA.md`. COGS e depoimento de cliente não entram na skill do Gemini: eles vêm da busca pública descrita nesse documento.
+
 ## Processo de Pull Request
 
 1. Crie uma branch para a sua funcionalidade (`git checkout -b feat/nome-da-funcionalidade`).
