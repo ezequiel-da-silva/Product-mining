@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.5.0...v0.6.0) (2026-11-05)
+
+
+### Features
+
+* source factory cost and five-star reviews ([43f661a](https://github.com/ezequiel-da-silva/Product-mining/commit/43f661a4e5e2aa5ae03ae22e608ce7cff1b4483f))
+
 ## [0.5.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.4.1...v0.5.0) (2026-11-05)
 
 
