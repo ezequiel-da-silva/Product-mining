@@ -1,4 +1,6 @@
+import csv
 import html
+import io
 import json
 import logging
 import math
@@ -16,6 +18,7 @@ from google import genai
 from google.genai import types
 from psycopg.rows import dict_row
 from schemas import nicho_canonico
+from src.cambio import margem_em_brl
 from src.midia_r2 import url_leitura
 from src.provas_sociais import url_http_publica
 
@@ -54,7 +57,8 @@ COLUNAS_OFERTA = """
     transcricao_video, url_video_r2, objecoes_quebradas, angulos_alternativos,
     preco_oferta_estimado, preco_moeda, score, margem_estimada_pct, data_ultima_captura,
     dados_comerciais_ausentes, cogs_estimado, cogs_moeda, fornecedor_url,
-    fornecedor_origem, provas_sociais
+    fornecedor_origem, provas_sociais, venda_brl, cogs_brl,
+    paridade_vigencia, paridade_fonte
 """
 ROTULOS_OFERTAS = {
     "id": "Identificador",
@@ -103,6 +107,7 @@ OFERTAS_BUSCA_SQL = (
     FROM ofertas
     JOIN oferta_vetor AS vetor ON vetor.oferta_id = ofertas.id
     WHERE status_qualificacao = 'concluido'
+      AND vetor.mes_captura >= (date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')) - INTERVAL '18 months')::date
     ORDER BY vetor.embedding <=> %s::vector, ofertas.id
     LIMIT %s
     """
@@ -115,6 +120,7 @@ OFERTAS_BUSCA_CURSOR_SQL = (
     FROM ofertas
     JOIN oferta_vetor AS vetor ON vetor.oferta_id = ofertas.id
     WHERE status_qualificacao = 'concluido'
+      AND vetor.mes_captura >= (date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo')) - INTERVAL '18 months')::date
       AND (vetor.embedding <=> %s::vector, ofertas.id) > (%s, %s)
     ORDER BY vetor.embedding <=> %s::vector, ofertas.id
     LIMIT %s
@@ -377,9 +383,7 @@ def _cogs_na_moeda_da_venda(oferta: dict) -> bool:
     )
 
 
-def rotulo_margem(valor: object, moeda: str | None = None) -> str:
-    if moeda != "BRL":
-        return "Margem não comparável"
+def _rotulo_percentual(valor: object) -> str:
     if valor is None:
         return "Margem não identificada"
     numero = int(valor)
@@ -392,12 +396,82 @@ def rotulo_margem(valor: object, moeda: str | None = None) -> str:
     return f"Margem {faixa}: {numero}%"
 
 
+def _rotulo_paridade(oferta: dict) -> str | None:
+    venda_moeda = oferta.get("preco_moeda")
+    cogs_moeda = oferta.get("cogs_moeda")
+    if not isinstance(venda_moeda, str) or not isinstance(cogs_moeda, str) or venda_moeda == cogs_moeda:
+        return None
+    if oferta.get("venda_brl") is None or oferta.get("cogs_brl") is None:
+        return None
+    percentual = margem_em_brl(oferta.get("venda_brl"), oferta.get("cogs_brl"))
+    if percentual is None:
+        return None
+    fonte = oferta.get("paridade_fonte") or ""
+    vigencia = oferta.get("paridade_vigencia") or ""
+    return f"{_rotulo_percentual(percentual)} · paridade {fonte} {vigencia}".strip()
+
+
+def rotulo_margem(
+    valor: object,
+    moeda: str | None = None,
+    moeda_cogs: str | None = None,
+    oferta: dict | None = None,
+) -> str:
+    """Moedas iguais são comparáveis sem paridade. Paridade só entra quando as moedas diferem."""
+    moeda_efetiva = moeda
+    cogs_efetiva = moeda_cogs
+    if isinstance(oferta, dict):
+        if not isinstance(moeda_efetiva, str) and isinstance(oferta.get("preco_moeda"), str):
+            moeda_efetiva = oferta.get("preco_moeda")
+        if not isinstance(cogs_efetiva, str) and isinstance(oferta.get("cogs_moeda"), str):
+            cogs_efetiva = oferta.get("cogs_moeda")
+        convertido = _rotulo_paridade(oferta)
+        if convertido:
+            return convertido
+    if isinstance(moeda_efetiva, str) and isinstance(cogs_efetiva, str) and moeda_efetiva == cogs_efetiva:
+        return _rotulo_percentual(valor)
+    if moeda_efetiva != "BRL":
+        return "Margem não comparável"
+    return _rotulo_percentual(valor)
+
+
+_CORES_MARGEM = {
+    "alta": "#9AE6B4",
+    "média": "#F6E05E",
+    "baixa": "#FEB2B2",
+    "estimativa": "#E2E8F0",
+}
+
+
+def html_badge(texto: str, faixa: str) -> str:
+    fundo = _CORES_MARGEM.get(faixa, _CORES_MARGEM["estimativa"])
+    return (
+        '<span style="display:inline-block;background:'
+        + fundo
+        + ';color:#0E1117;padding:0.15rem 0.5rem;border-radius:999px;font-weight:600;">'
+        + html.escape(texto)
+        + "</span>"
+    )
+
+
+def _faixa_do_rotulo(texto: str) -> str:
+    if "alta" in texto:
+        return "alta"
+    if "média" in texto:
+        return "média"
+    if "baixa" in texto:
+        return "baixa"
+    return "estimativa"
+
+
 def _mostrar_margem(valor: object, moeda: str | None = None, oferta: dict | None = None) -> None:
-    st.caption(rotulo_margem(valor, moeda))
+    texto = rotulo_margem(valor, moeda, oferta=oferta)
+    st.caption(texto)
+    st.html(html_badge(texto, _faixa_do_rotulo(texto)))
     if isinstance(oferta, dict) and _cogs_na_moeda_da_venda(oferta):
-        st.badge(rotulo_cogs(oferta), color="gray", help="Custo lido na busca reversa por imagem.")
+        st.html(html_badge(rotulo_cogs(oferta), "estimativa"))
     else:
-        st.badge(ESTIMATIVA_SOURCING, color="gray", help=LEGENDA_MARGEM)
+        st.html(html_badge(ESTIMATIVA_SOURCING, "estimativa"))
         st.caption(LEGENDA_MARGEM)
     if isinstance(oferta, dict):
         cogs = texto_cogs(oferta)
@@ -479,6 +553,9 @@ div[data-testid="stHtml"]:has(script[data-atalhos-triagem]) {{
   margin: 0;
   padding: 0;
 }}
+a[href] {{
+  color: #B9A8FF;
+}}
 </style>
 <script data-atalhos-triagem>
 (() => {{
@@ -501,7 +578,32 @@ div[data-testid="stHtml"]:has(script[data-atalhos-triagem]) {{
     const alvo = evento.target instanceof Element ? evento.target : null;
     cardApontado = alvo ? cardDoFoco(alvo) : null;
   }};
+  const prenderFoco = (dialogo, evento) => {{
+    const focaveis = [...dialogo.querySelectorAll("a, button, input, select, textarea, [tabindex]")]
+      .filter((item) => !item.disabled && item.tabIndex !== -1);
+    if (!focaveis.length) {{
+      evento.preventDefault();
+      return;
+    }}
+    const primeiro = focaveis[0];
+    const ultimo = focaveis[focaveis.length - 1];
+    const atual = document.activeElement;
+    if (evento.shiftKey && (atual === primeiro || !dialogo.contains(atual))) {{
+      evento.preventDefault();
+      ultimo.focus();
+      return;
+    }}
+    if (!evento.shiftKey && (atual === ultimo || !dialogo.contains(atual))) {{
+      evento.preventDefault();
+      primeiro.focus();
+    }}
+  }};
   const tecla = (evento) => {{
+    const dialogo = document.querySelector("[data-testid='stDialog']");
+    if (dialogo) {{
+      if ((evento.key || "") === "Tab") prenderFoco(dialogo, evento);
+      return;
+    }}
     if (evento.repeat || evento.metaKey || evento.ctrlKey || evento.altKey) return;
     const alvo = evento.target instanceof Element ? evento.target : document.activeElement;
     if (!(alvo instanceof Element)) return;
@@ -707,8 +809,10 @@ def _escrever_provas(valor: object) -> None:
         if linha:
             st.text(linha)
         foto = prova.get("foto_url")
-        if isinstance(foto, str) and url_http_publica(foto):
-            st.image(foto.strip(), width=160)
+        assinada = url_leitura(foto) if isinstance(foto, str) else None
+        if isinstance(assinada, str):
+            segura = html.escape(assinada, quote=True)
+            st.html(f'<img src="{segura}" referrerpolicy="no-referrer" ' 'alt="Foto enviada pelo cliente" width="160">')
 
 
 def _escrever_fornecedor(oferta: dict) -> None:
@@ -743,6 +847,36 @@ def _escrever_angulos(valor: object) -> None:
         st.write(angulo.get("copy_sugerida") or "—")
 
 
+def html_player(url: str) -> str:
+    """O playback nasce aqui e a URL já veio assinada por 300 s."""
+    segura = html.escape(url, quote=True)
+    return f"""
+<video controls data-player-oferta src="{segura}" style="height:{ALTURA_VIDEO}px;max-width:{LARGURA_VIDEO}px;width:100%;object-fit: contain;background:#000;"></video>
+<div>
+  <button type="button" data-velocidade="1.5">1,5×</button>
+  <button type="button" data-velocidade="2">2×</button>
+  <button type="button" data-quadro="1">Avançar 1 quadro</button>
+</div>
+<script>
+(() => {{
+  const video = document.querySelector("[data-testid='stDialog'] video[data-player-oferta]");
+  if (!video) return;
+  document.querySelectorAll("[data-velocidade]").forEach((botao) => {{
+    botao.addEventListener("click", () => {{
+      video.playbackRate = Number(botao.getAttribute("data-velocidade"));
+    }});
+  }});
+  const quadro = document.querySelector("[data-quadro]");
+  if (quadro) {{
+    quadro.addEventListener("click", () => {{
+      video.currentTime += 1/30;
+    }});
+  }}
+}})();
+</script>
+"""
+
+
 def _dialogo_oferta(oferta: dict) -> None:
     titulo = rotulo_acessivel_detalhes(oferta)
 
@@ -763,17 +897,7 @@ def _corpo_dialogo(oferta: dict) -> None:
     video = url_leitura(oferta.get("url_video_r2"))
     if video:
         st.caption("Prévia do vídeo do anúncio")
-        st.html(
-            "<style>"
-            "[data-testid='stDialog'] video[data-testid='stVideo'] {"
-            f"height: {ALTURA_VIDEO}px;"
-            "width: 100%;"
-            "object-fit: contain;"
-            "background: #000;"
-            "}"
-            "</style>"
-        )
-        st.video(video, width=LARGURA_VIDEO)
+        st.html(html_player(video))
     with st.expander("Transcrição do Criativo"):
         st.write(oferta.get("transcricao_video") or "—")
 
@@ -1107,16 +1231,34 @@ def _definir_triagem(conn, oferta_id: int, estado: str) -> None:
         cur.execute(SQL_REMOVER_TRIAGEM, (oferta_id, estado))
         if cur.rowcount == 0:
             cur.execute(SQL_DEFINIR_TRIAGEM, (oferta_id, estado))
+            if estado == "estrelada":
+                cur.execute(SQL_INTENCAO_INTEGRACAO, {"oferta_id": oferta_id, "estado": estado})
     conn.commit()
 
 
 SQL_DEFINIR_TRIAGEM_LOTE = """
-INSERT INTO triagem_oferta (oferta_id, estado)
-SELECT id, %(estado)s
-FROM unnest(%(ids)s::bigint[]) AS id
-ON CONFLICT (oferta_id) DO UPDATE
-SET estado = EXCLUDED.estado,
-    atualizado_em = CURRENT_TIMESTAMP
+WITH gravada AS (
+    INSERT INTO triagem_oferta (oferta_id, estado)
+    SELECT id, %(estado)s
+    FROM unnest(%(ids)s::bigint[]) AS id
+    ON CONFLICT (oferta_id) DO UPDATE
+    SET estado = EXCLUDED.estado,
+        atualizado_em = CURRENT_TIMESTAMP
+    RETURNING oferta_id, estado
+)
+INSERT INTO integracao_evento (estado, corpo, tentativas)
+SELECT 'pendente', jsonb_build_object('oferta_id', oferta_id, 'estado', estado), 0
+FROM gravada
+WHERE estado = 'estrelada'
+"""
+
+SQL_INTENCAO_INTEGRACAO = """
+INSERT INTO integracao_evento (estado, corpo, tentativas)
+VALUES (
+    'pendente',
+    jsonb_build_object('oferta_id', %(oferta_id)s, 'estado', %(estado)s),
+    0
+)
 """
 
 
@@ -1164,6 +1306,101 @@ def _aplicar_lote(conn, ofertas: list[dict]) -> bool:
     return True
 
 
+SQL_OPERACAO_ADERENCIA = """
+SELECT
+    (SELECT COUNT(*) FROM ofertas
+      WHERE analise_concluida_em >= CURRENT_TIMESTAMP - INTERVAL '7 days') AS aderentes,
+    (SELECT COUNT(*) FROM falha_ia_definitiva
+      WHERE classe = 'estrutural'
+        AND criado_em >= CURRENT_TIMESTAMP - INTERVAL '7 days') AS estruturais,
+    (SELECT COUNT(*) FROM falha_ia_definitiva
+      WHERE classe = 'transporte'
+        AND criado_em >= CURRENT_TIMESTAMP - INTERVAL '7 days') AS transporte
+"""
+
+SQL_EXPORTACAO_ESTRELADAS = """
+SELECT ofertas.id, ofertas.nicho, ofertas.sub_nicho, ofertas.gancho_3s,
+       ofertas.gatilho_mental, ofertas.url_destino, ofertas.copy_texto,
+       ofertas.objecoes_quebradas, ofertas.preco_oferta_estimado, ofertas.preco_moeda,
+       ofertas.score, ofertas.margem_estimada_pct, ofertas.data_ultima_captura,
+       ofertas.cogs_estimado, ofertas.cogs_moeda, ofertas.fornecedor_origem,
+       ofertas.venda_brl, ofertas.cogs_brl
+FROM ofertas
+JOIN triagem_oferta ON triagem_oferta.oferta_id = ofertas.id
+WHERE ofertas.oferta_canonica_id IS NULL
+  AND triagem_oferta.estado = 'estrelada'
+ORDER BY ofertas.id
+"""
+
+
+def texto_aderencia(aderentes: int, estruturais: int) -> str:
+    """Aderência = aderentes / (aderentes + estruturais)."""
+    base = aderentes + estruturais
+    if base == 0:
+        return "Aderência: sem amostra nos últimos 7 dias."
+    percentual = (Decimal(aderentes) * Decimal(100) / Decimal(base)).quantize(Decimal("0.1"))
+    return f"Aderência: {percentual}% ({aderentes} aderentes, {estruturais} estruturais)."
+
+
+def _csv_ofertas(linhas: list[dict]) -> str:
+    if not linhas:
+        return ""
+    buffer = io.StringIO()
+    campos = list(linhas[0].keys())
+    escritor = csv.DictWriter(buffer, fieldnames=campos)
+    escritor.writeheader()
+    for linha in linhas:
+        escritor.writerow({chave: "" if valor is None else valor for chave, valor in linha.items()})
+    return buffer.getvalue()
+
+
+def html_exportacao(linhas: list[dict]) -> str:
+    """O arquivo nasce no browser. O servidor só entrega o JSON já filtrado."""
+    payload = json.dumps(linhas, ensure_ascii=False, default=str)
+    tabela = _csv_ofertas(linhas)
+    dados = json.dumps({"json": payload, "csv": tabela})
+    return f"""
+<div id="exportacao-ofertas" hidden>{html.escape(dados)}</div>
+<button type="button" id="baixar-csv">Baixar CSV</button>
+<button type="button" id="baixar-json">Baixar JSON</button>
+<script>
+(() => {{
+  const cru = document.getElementById("exportacao-ofertas");
+  if (!cru) return;
+  const pacote = JSON.parse(cru.textContent || "{{}}");
+  const baixar = (nome, tipo, conteudo) => {{
+    const blob = new Blob([conteudo], {{type: tipo}});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = nome;
+    link.click();
+    URL.revokeObjectURL(url);
+  }};
+  const csv = document.getElementById("baixar-csv");
+  const jsonBtn = document.getElementById("baixar-json");
+  if (csv) csv.addEventListener("click", () => baixar("ofertas-estreladas.csv", "text/csv", pacote.csv || ""));
+  if (jsonBtn) jsonBtn.addEventListener("click", () => baixar("ofertas-estreladas.json", "application/json", pacote.json || "[]"));
+}})();
+</script>
+"""
+
+
+def listar_estreladas(conn) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(SQL_EXPORTACAO_ESTRELADAS)
+        linhas = cur.fetchall()
+    if not isinstance(linhas, list):
+        return []
+    return [dict(linha) for linha in linhas]
+
+
+def _painel_exportacao(conn) -> None:
+    st.subheader("Exportar estreladas")
+    st.caption("O download acontece no browser. Vídeo, transcrição completa e foto ficam de fora.")
+    st.html(html_exportacao(listar_estreladas(conn)), unsafe_allow_javascript=True)
+
+
 def _painel_operacao(conn) -> None:
     st.header("Operação do pipeline")
     st.caption(
@@ -1180,6 +1417,8 @@ def _painel_operacao(conn) -> None:
         p95 = cur.fetchone() or {}
         cur.execute(SQL_OPERACAO_PRECOS)
         precos = cur.fetchall()
+        cur.execute(SQL_OPERACAO_ADERENCIA)
+        aderencia = cur.fetchone() or {}
     if status:
         colunas = st.columns(len(status))
         for coluna, linha in zip(colunas, status, strict=False):
@@ -1188,6 +1427,13 @@ def _painel_operacao(conn) -> None:
     else:
         st.info("Nenhuma oferta na base.")
     st.metric("Ofertas com falha de IA", int((falhas or {}).get("total") or 0))
+    aderentes = int(aderencia.get("aderentes") or 0)
+    estruturais = int(aderencia.get("estruturais") or 0)
+    transporte = int(aderencia.get("transporte") or 0)
+    st.metric("Aderentes, 7 dias", aderentes)
+    st.metric("Estruturais, 7 dias", estruturais)
+    st.metric("Transporte, 7 dias", transporte)
+    st.caption(texto_aderencia(aderentes, estruturais))
     prompt = int((tokens or {}).get("prompt") or 0)
     saida = int((tokens or {}).get("saida") or 0)
     st.caption(f"Tokens neste mês: {prompt} de prompt e {saida} de resposta.")
@@ -1242,6 +1488,7 @@ def _painel_ofertas(conn) -> None:
     if not st.session_state["ofertas_inicializadas"]:
         _carregar_proxima_pagina(conn, filtro_consulta, ocultar_descartadas)
 
+    _painel_exportacao(conn)
     ofertas = st.session_state["ofertas_resultados"]
     em_busca = st.session_state["ofertas_modo"] == "busca"
     anuncio = texto_regiao_viva(

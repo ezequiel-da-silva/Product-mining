@@ -70,14 +70,9 @@ def test_falha_de_fila_interrompe_a_varredura():
         response = MagicMock()
         response.url = "https://www.facebook.com/ads/library/api/graphql/"
         response.status = 200
-        response.json.return_value = {
-            "data": {
-                "edges": [
-                    {"node": {"ad_archive_id": "ad-1"}},
-                    {"node": {"ad_archive_id": "ad-2"}},
-                ]
-            }
-        }
+        response.body.return_value = (
+            b'{"data":{"edges":[{"node":{"ad_archive_id":"ad-1"}},{"node":{"ad_archive_id":"ad-2"}}]}}'
+        )
         for callback in handlers:
             callback(response)
 

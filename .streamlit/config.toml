@@ -1,7 +1,15 @@
 [theme]
 base = "dark"
-primaryColor = "#7C6AF7"
+primaryColor = "#5B46C7"
 backgroundColor = "#0E1117"
 secondaryBackgroundColor = "#1A1D27"
 textColor = "#FAFAFA"
+linkColor = "#B9A8FF"
 font = "sans serif"
+
+[server]
+address = "127.0.0.1"
+port = 8501
+enableCORS = false
+enableXsrfProtection = true
+allowedHosts = ["localhost", "127.0.0.1", "painel.interno.exemplo"]

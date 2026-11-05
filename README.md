@@ -161,8 +161,17 @@ printf '%s' "$CLOUDFLARE_R2_SECRET_KEY" > secrets/r2/CLOUDFLARE_R2_SECRET_KEY
 docker compose up -d --no-deps --force-recreate worker-qualification worker-ia celery-beat dashboard-ui
 ```
 
-Configure `CLOUDFLARE_R2_PUBLIC_URL` para obter URLs permanentes dos vídeos. Sem ela,
-o worker usa uma URL pré-assinada válida por até sete dias.
+A referência persistida é a chave `videos/<id>.mp4`. A URL de playback nasce no diálogo
+e morre em 300 s. `CLOUDFLARE_R2_PUBLIC_URL` não entra mais na coluna. Objetos antigos
+gravados como URL pública continuam legíveis: a chave é reconhecida dentro da URL e
+assinada na leitura. O par `CLOUDFLARE_R2_ACCESS_KEY_PROXIMO` /
+`CLOUDFLARE_R2_SECRET_KEY_PROXIMO` fica disponível para rotação; a assinatura usa o par
+vigente. `infra/r2-deny-listbucket-anonimo.json` é só referência e não é aplicado na Cloudflare.
+
+O painel e o Flower continuam em `127.0.0.1:8501` e `127.0.0.1:5555`. `infra/Caddyfile`
+é uma camada opcional na frente desses binds, com os cabeçalhos de segurança. Ele não
+sobe no `docker compose up`. O dashboard assina o vídeo com a secret key que o compose
+já injeta em `dashboard-ui`; o volume `/run/secrets` desse serviço continua sendo o do Gemini.
 
 ## Busca semântica e paginação
 

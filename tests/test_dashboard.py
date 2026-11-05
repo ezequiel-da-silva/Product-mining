@@ -359,6 +359,20 @@ def test_nota_margem_e_checkout_sao_explicitos():
     assert rotulo_margem(None, "BRL") == "Margem não identificada"
     assert rotulo_margem(70, "USD") == "Margem não comparável"
     assert rotulo_margem(70) == "Margem não comparável"
+    assert rotulo_margem(70, "USD", "USD") == "Margem alta: 70%"
+    assert "paridade bacen" in rotulo_margem(
+        10,
+        "BRL",
+        "CNY",
+        {
+            "preco_moeda": "BRL",
+            "cogs_moeda": "CNY",
+            "venda_brl": 100,
+            "cogs_brl": 40,
+            "paridade_fonte": "bacen",
+            "paridade_vigencia": "2026-11-05",
+        },
+    )
     assert ESTIMATIVA_SOURCING == "Estimativa Sourcing (China)"
     assert "conciliação fiscal" in LEGENDA_MARGEM
     assert rotulo_acessivel_detalhes({"nicho": "Pet", "id": 7}) == "Ver detalhes da oferta Pet #7"
@@ -492,10 +506,15 @@ def test_cards_e_modal_substituem_a_tabela():
     assert "_mostrar_margem" in fonte_dialogo
     assert "_mostrar_margem" in fonte_cards
     assert "Assistir vídeo" not in fonte_dialogo
-    assert "st.video" in fonte_dialogo
-    assert "width=LARGURA_VIDEO" in fonte_dialogo
-    assert "ALTURA_VIDEO" in fonte_dialogo
-    assert "object-fit: contain" in fonte_dialogo
+    assert "st.video" not in fonte_dialogo
+    assert "html_player" in fonte_dialogo
+    player = inspect.getsource(dashboard.html_player)
+    assert "ALTURA_VIDEO" in player
+    assert "LARGURA_VIDEO" in player
+    assert "object-fit: contain" in player
+    assert "<video controls" in player
+    assert "1,5×" in player
+    assert "currentTime += 1/30" in player
     assert 'height="stretch"' in fonte_dialogo
     assert 'width="stretch"' not in fonte_dialogo
     assert "st.columns(3" in fonte_dialogo
@@ -651,6 +670,9 @@ def test_atalho_do_card_focado_usa_s_d_e_t():
     assert "pointerdown" in html_atalho
     assert "window.__atalhosTriagem" in html_atalho
     assert "textarea" in html_atalho
+    assert "[data-testid='stDialog']" in html_atalho
+    assert "prenderFoco" in html_atalho
+    assert "return;" in html_atalho.split("if (dialogo)")[1][:180]
     assert "unsafe_allow_javascript=True" in inspect.getsource(dashboard._registrar_atalhos_triagem)
 
 
