@@ -51,6 +51,15 @@ BEGIN
   IF to_regclass('public.oferta_vetor') IS NOT NULL THEN
     GRANT SELECT ON TABLE oferta_vetor TO streamlit_readonly;
   END IF;
+  IF to_regclass('public.falha_ia_definitiva') IS NOT NULL THEN
+    GRANT SELECT ON TABLE falha_ia_definitiva TO streamlit_readonly;
+  END IF;
+  IF to_regclass('public.integracao_evento') IS NOT NULL THEN
+    GRANT INSERT ON TABLE integracao_evento TO streamlit_readonly;
+  END IF;
+  IF to_regclass('public.integracao_evento_id_seq') IS NOT NULL THEN
+    GRANT USAGE, SELECT ON SEQUENCE integracao_evento_id_seq TO streamlit_readonly;
+  END IF;
 END $$;
 
 DO $$
