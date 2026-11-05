@@ -317,5 +317,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('014_preco_moeda'),
     ('015_phash_perceptual'),
     ('016_fadiga_anuncio'),
-    ('017_custo_modelo_e_vetor_mensal')
+    ('017_custo_modelo_e_vetor_mensal'),
+    ('018_preco_pagina_e_grupo')
 ON CONFLICT (versao) DO NOTHING;

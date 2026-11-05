@@ -30,9 +30,7 @@ def test_extrai_preco_so_com_moeda_inequivoca():
     assert extrair_preco_html("<p>$ 49.90</p>") == PrecoLido(Decimal("49.90"), "USD")
     assert extrair_preco_html("<p>sem preço</p>") is None
     assert extrair_preco_html("<span>doar R$ 2,00</span>") is None
-    assert extrair_preco_html("<span>doar R$ 2,00</span><p>R$ 120,00</p>") == PrecoLido(
-        Decimal("120.00"), "BRL"
-    )
+    assert extrair_preco_html("<span>doar R$ 2,00</span><p>R$ 120,00</p>") == PrecoLido(Decimal("120.00"), "BRL")
     euro = '<script type="application/ld+json">{"offers":{"price":"49.90","priceCurrency":"EUR"}}</script>'
     assert extrair_preco_html(euro) is None
     assert ler_preco("1.299", "BRL") is None
