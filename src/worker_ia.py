@@ -1348,6 +1348,10 @@ def _modelo_juiz() -> str | None:
     return nome
 
 
+def _cota_esgotada(erro: Exception) -> bool:
+    return isinstance(erro, ClientError) and getattr(erro, "code", None) == 429
+
+
 SQL_AMOSTRA_JUIZ = """
 WITH dia AS (
     SELECT COUNT(*) AS concluidas
@@ -1399,6 +1403,23 @@ def _parecer_juiz(modelo: str, nicho: str, gancho: str, fala: str) -> tuple[str 
     return nicho_canonico(bruto) if isinstance(bruto, str) else None, str(motivo or "")[:500]
 
 
+def _descartar_amostras(amostra_ids: list[int]) -> None:
+    if not amostra_ids:
+        return
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM avaliacao_amostral
+                WHERE id = ANY(%(ids)s)
+                  AND nicho_juiz IS NULL
+                  AND motivo IS NULL
+                """,
+                {"ids": amostra_ids},
+            )
+        conn.commit()
+
+
 def _registrar_parecer(amostra_id: int, nicho_extraido: str, nicho_juiz: str | None, motivo: str) -> None:
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -1434,7 +1455,7 @@ def avaliar_amostra() -> dict:
     if not isinstance(amostra, list):
         return {"julgadas": 0}
     julgadas = 0
-    for linha in amostra:
+    for indice, linha in enumerate(amostra):
         if not isinstance(linha, dict):
             continue
         try:
@@ -1458,6 +1479,18 @@ def avaliar_amostra() -> dict:
                 str(fala or ""),
             )
         except Exception as erro:
+            if _cota_esgotada(erro):
+                restantes = [
+                    int(item["id"])
+                    for item in amostra[indice:]
+                    if isinstance(item, dict) and item.get("id") is not None
+                ]
+                _descartar_amostras(restantes)
+                logger.warning(
+                    "Juiz sem cota no modelo %s. Lote interrompido; a tarefa não volta para a fila.",
+                    modelo,
+                )
+                return {"status": "cota", "julgadas": julgadas}
             nicho_juiz, motivo = None, f"{type(erro).__name__}: {erro}"[:500]
         _registrar_parecer(int(linha["id"]), str(linha.get("nicho_extraido") or ""), nicho_juiz, motivo)
         julgadas += 1

@@ -130,13 +130,28 @@ derruba a conexão até o recreate. Não use `docker compose down -v`: isso apag
 ./infra/rotate-role-password.sh streamlit_readonly 'senha-nova'
 ```
 
-Atualize `PIPELINE_DB_PASSWORD`, `LIFECYCLE_DB_PASSWORD` e `STREAMLIT_DB_PASSWORD` no `.env`
-com os mesmos valores. Senhas colocadas nessas URLs não podem conter `@`, `:`, `/` ou `#`.
-Recrie só quem usa essas URLs:
+O script aplica o `ALTER ROLE` e, para `pipeline_writer` e `lifecycle_writer`, reescreve
+`/tmp/pgbouncer/userlist.txt` no contêiner e manda `SIGHUP` ao PgBouncer. Sem esse passo o
+Postgres aceita a senha nova e o PgBouncer continua na antiga: o worker recebe `auth failed`.
+`streamlit_readonly` não passa pelo PgBouncer.
+
+Grave a mesma senha em `PIPELINE_DB_PASSWORD`, `LIFECYCLE_DB_PASSWORD` ou
+`STREAMLIT_DB_PASSWORD` no `.env` antes de recriar o `spy_pgbouncer`. O arquivo vive no
+tmpfs e o próximo start gera o userlist de novo a partir do `.env`. Senhas colocadas nas
+URLs não podem conter `@`, `:`, `/` ou `#`, nem quebra de linha.
 
 ```bash
-docker compose up -d --no-deps --force-recreate worker-qualification worker-ia dashboard-ui celery-beat
+docker compose up -d --no-deps --force-recreate pgbouncer worker-qualification worker-ia dashboard-ui celery-beat
 ```
+
+### Juiz de 2%
+
+`MODELO_JUIZ` vazio, ou igual ao modelo da extração, deixa a rotina em `sem_juiz` e não chama
+a API. Para ligar a auditoria, escolha outro modelo, rápido e barato, com raciocínio
+analítico — um endpoint ou uma versão distinta do extrator. A mesma `GEMINI_API_KEY` do
+`worker-ia` precisa de cota para esse modelo. O Beat só enfileira a cada cinco minutos; a
+chamada roda na `ai_multimodal_queue`. Um HTTP 429 interrompe o lote, apaga as amostras
+ainda sem parecer e não reagenda a tarefa, para o erro de cota não ocupar a fila da análise.
 
 ### Papel `lifecycle_writer` em um volume já existente
 
