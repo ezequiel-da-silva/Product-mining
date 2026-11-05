@@ -123,7 +123,7 @@ BEGIN
     GRANT SELECT ON TABLE paridade_cambio TO pipeline_writer;
   END IF;
   IF to_regclass('public.avaliacao_amostral') IS NOT NULL THEN
-    GRANT SELECT, INSERT ON TABLE avaliacao_amostral TO pipeline_writer;
+    GRANT SELECT, INSERT, DELETE ON TABLE avaliacao_amostral TO pipeline_writer;
     GRANT UPDATE (nicho_juiz, concorda, motivo) ON TABLE avaliacao_amostral TO pipeline_writer;
   END IF;
   IF to_regclass('public.avaliacao_amostral_id_seq') IS NOT NULL THEN

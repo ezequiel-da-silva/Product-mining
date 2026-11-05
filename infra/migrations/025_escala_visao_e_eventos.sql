@@ -40,7 +40,7 @@ ALTER TABLE integracao_evento ADD CONSTRAINT integracao_evento_estado_check
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pipeline_writer') THEN
-        GRANT SELECT, INSERT ON TABLE avaliacao_amostral TO pipeline_writer;
+        GRANT SELECT, INSERT, DELETE ON TABLE avaliacao_amostral TO pipeline_writer;
         GRANT UPDATE (nicho_juiz, concorda, motivo) ON TABLE avaliacao_amostral TO pipeline_writer;
         GRANT UPDATE (
             legenda_queimada,
