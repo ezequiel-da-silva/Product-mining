@@ -1,0 +1,24 @@
+# Camada opcional na frente do bind localhost do painel (8501) e do Flower (5555).
+# Não entra no `docker compose up`: a porta que o README ensina continua 127.0.0.1:8501.
+# O Streamlit 1.66 e o atalho S/D/T precisam de script-src e style-src 'unsafe-inline'.
+
+(seguranca) {
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' ws: wss: https:; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		-Server
+	}
+}
+
+painel.interno.exemplo {
+	import seguranca
+	reverse_proxy 127.0.0.1:8501
+}
+
+flower.interno.exemplo {
+	import seguranca
+	reverse_proxy 127.0.0.1:5555
+}

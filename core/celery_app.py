@@ -26,8 +26,14 @@ app.conf.update(
         "tasks.qualification.*": {"queue": "qualification_queue"},
         "src.worker_ia.processar_anuncio_multimodal": {"queue": "ai_multimodal_queue"},
         "src.worker_ia.reprocessar_falha_definitiva": {"queue": "ai_dead_letter"},
+        "src.worker_ia.reprocessar_falha_da_tabela": {"queue": "ai_multimodal_queue"},
         "src.worker_ia.gerar_angulos_em_teste": {"queue": "ai_multimodal_queue"},
         "tasks.lifecycle.expirar_ofertas_fracas": {"queue": "lifecycle_queue"},
+        "tasks.lifecycle.reprocessar_falhas_ia": {"queue": "lifecycle_queue"},
+        "tasks.lifecycle.alertar_dlq_ia": {"queue": "lifecycle_queue"},
+        "tasks.lifecycle.coletar_paridade_cambio": {"queue": "lifecycle_queue"},
+        "tasks.lifecycle.enviar_integracao_evento": {"queue": "lifecycle_queue"},
+        "tasks.lifecycle.manter_particoes_oferta_vetor": {"queue": "lifecycle_queue"},
     },
     beat_schedule={
         "expirar-ofertas-fracas": {
@@ -41,6 +47,26 @@ app.conf.update(
         "gerar-angulos-em-teste": {
             "task": "src.worker_ia.gerar_angulos_em_teste",
             "schedule": crontab(minute="*/2"),
+        },
+        "reprocessar-falhas-ia": {
+            "task": "tasks.lifecycle.reprocessar_falhas_ia",
+            "schedule": crontab(minute="*/5"),
+        },
+        "alertar-dlq-ia": {
+            "task": "tasks.lifecycle.alertar_dlq_ia",
+            "schedule": crontab(minute="*/5"),
+        },
+        "coletar-paridade-cambio": {
+            "task": "tasks.lifecycle.coletar_paridade_cambio",
+            "schedule": crontab(hour=8, minute=15),
+        },
+        "enviar-integracao-evento": {
+            "task": "tasks.lifecycle.enviar_integracao_evento",
+            "schedule": crontab(minute="*/2"),
+        },
+        "manter-particoes-oferta-vetor": {
+            "task": "tasks.lifecycle.manter_particoes_oferta_vetor",
+            "schedule": crontab(hour=2, minute=30),
         },
     },
     worker_prefetch_multiplier=1,

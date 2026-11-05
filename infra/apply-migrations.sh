@@ -48,7 +48,12 @@ for file in \
   infra/migrations/016_fadiga_anuncio.sql \
   infra/migrations/017_custo_modelo_e_vetor_mensal.sql \
   infra/migrations/018_preco_pagina_e_grupo.sql \
-  infra/migrations/019_cogs_fornecedor_e_provas.sql
+  infra/migrations/019_cogs_fornecedor_e_provas.sql \
+  infra/migrations/020_falha_ia_definitiva.sql \
+  infra/migrations/021_preco_origem.sql \
+  infra/migrations/022_paridade_cambio.sql \
+  infra/migrations/023_integracao_evento.sql \
+  infra/migrations/024_particoes_oferta_vetor.sql
 do
   versao=$(basename "$file" .sql)
   applied=$(

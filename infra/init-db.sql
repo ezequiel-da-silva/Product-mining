@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS ofertas (
     processamento_token UUID,
     falhas_ia SMALLINT NOT NULL DEFAULT 0,
     falhas_ia_em TIMESTAMPTZ,
+    falhas_ia_transporte SMALLINT NOT NULL DEFAULT 0,
+    resposta_ia_bruta TEXT,
+    resposta_ia_motivo VARCHAR(500),
+    preco_origem VARCHAR(20),
+    venda_brl NUMERIC(12, 2),
+    cogs_brl NUMERIC(12, 2),
+    paridade_vigencia DATE,
+    paridade_fonte VARCHAR(20),
     CONSTRAINT ofertas_status_qualificacao_check
         CHECK (status_qualificacao IN ('pendente', 'pendente_lp', 'processando_ia', 'concluido')),
     CONSTRAINT ofertas_score_check
@@ -315,6 +323,220 @@ REVOKE ALL ON FUNCTION sincronizar_oferta_vetor() FROM PUBLIC;
 REVOKE ALL ON FUNCTION remover_oferta_vetor() FROM PUBLIC;
 REVOKE ALL ON FUNCTION mes_captura_oferta(timestamptz) FROM PUBLIC;
 
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS falhas_ia_transporte SMALLINT NOT NULL DEFAULT 0;
+
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS resposta_ia_bruta TEXT;
+
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS resposta_ia_motivo VARCHAR(500);
+
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS preco_origem VARCHAR(20);
+
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS venda_brl NUMERIC(12, 2);
+
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS cogs_brl NUMERIC(12, 2);
+
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS paridade_vigencia DATE;
+
+ALTER TABLE ofertas
+    ADD COLUMN IF NOT EXISTS paridade_fonte VARCHAR(20);
+
+DO $$
+BEGIN
+    ALTER TABLE ofertas
+        ADD CONSTRAINT ofertas_preco_origem_check
+        CHECK (
+            preco_origem IS NULL
+            OR preco_origem IN (
+                'json_ld', 'shopify_json', 'html', 'bloqueado', 'divergente', 'ausente'
+            )
+        );
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+    ALTER TABLE ofertas
+        ADD CONSTRAINT ofertas_paridade_fonte_check
+        CHECK (paridade_fonte IS NULL OR paridade_fonte IN ('bacen', 'awesomeapi'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+    ALTER TABLE ofertas
+        ADD CONSTRAINT ofertas_venda_brl_check
+        CHECK (venda_brl IS NULL OR venda_brl >= 0);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+    ALTER TABLE ofertas
+        ADD CONSTRAINT ofertas_cogs_brl_check
+        CHECK (cogs_brl IS NULL OR cogs_brl >= 0);
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS falha_ia_definitiva (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    oferta_id BIGINT NOT NULL,
+    video_url_r2 TEXT,
+    ad_copy_texto TEXT,
+    analise JSONB,
+    uso_tokens JSONB,
+    erro TEXT,
+    classe VARCHAR(20) NOT NULL,
+    estado VARCHAR(20) NOT NULL DEFAULT 'pendente',
+    tentativas SMALLINT NOT NULL DEFAULT 0,
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reprocessado_em TIMESTAMPTZ,
+    CONSTRAINT falha_ia_definitiva_oferta_fk
+        FOREIGN KEY (oferta_id) REFERENCES ofertas (id) ON DELETE CASCADE,
+    CONSTRAINT falha_ia_definitiva_classe_check
+        CHECK (classe IN ('transporte', 'estrutural')),
+    CONSTRAINT falha_ia_definitiva_estado_check
+        CHECK (estado IN ('pendente', 'em_reprocesso', 'resolvida', 'esgotada')),
+    CONSTRAINT falha_ia_definitiva_tentativas_check
+        CHECK (tentativas >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_falha_ia_definitiva_pendente
+    ON falha_ia_definitiva (id)
+    WHERE estado = 'pendente';
+
+CREATE TABLE IF NOT EXISTS paridade_cambio (
+    moeda_origem VARCHAR(3) NOT NULL,
+    moeda_destino VARCHAR(3) NOT NULL DEFAULT 'BRL',
+    taxa NUMERIC(18, 8) NOT NULL,
+    fonte VARCHAR(20) NOT NULL,
+    vigencia DATE NOT NULL,
+    PRIMARY KEY (moeda_origem, moeda_destino, vigencia, fonte),
+    CONSTRAINT paridade_cambio_par_check CHECK (
+        moeda_destino = 'BRL' AND moeda_origem IN ('USD', 'CNY')
+    ),
+    CONSTRAINT paridade_cambio_fonte_check CHECK (fonte IN ('bacen', 'awesomeapi')),
+    CONSTRAINT paridade_cambio_taxa_check CHECK (taxa > 0)
+);
+
+CREATE TABLE IF NOT EXISTS integracao_evento (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    estado VARCHAR(20) NOT NULL DEFAULT 'pendente',
+    corpo JSONB NOT NULL,
+    tentativas SMALLINT NOT NULL DEFAULT 0,
+    enviado_em TIMESTAMPTZ,
+    CONSTRAINT integracao_evento_estado_check
+        CHECK (estado IN ('pendente', 'enviado', 'esgotada')),
+    CONSTRAINT integracao_evento_tentativas_check
+        CHECK (tentativas >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_integracao_evento_pendente
+    ON integracao_evento (id)
+    WHERE estado = 'pendente';
+
+CREATE OR REPLACE FUNCTION manter_particoes_oferta_vetor()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    inicio date;
+    proximo date;
+    nome text;
+    particao regclass;
+    relname text;
+    mes date;
+    corte date;
+    idx text;
+BEGIN
+    -- A poda do painel usa o mesmo corte: meses com menos de 18 meses ficam indexados.
+    corte := (
+        date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo'))::date
+        - INTERVAL '18 months'
+    )::date;
+    inicio := (
+        date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'America/Sao_Paulo'))::date
+        + INTERVAL '1 month'
+    )::date;
+
+    FOR passo IN 1..2 LOOP
+        proximo := (inicio + INTERVAL '1 month')::date;
+        nome := format('oferta_vetor_%s', to_char(inicio, 'YYYY_MM'));
+        IF to_regclass(format('public.%I', nome)) IS NULL THEN
+            EXECUTE format(
+                'CREATE TABLE %I PARTITION OF oferta_vetor FOR VALUES FROM (%L) TO (%L)',
+                nome,
+                inicio,
+                proximo
+            );
+        END IF;
+        inicio := proximo;
+    END LOOP;
+
+    FOR particao IN
+        SELECT inhrelid
+        FROM pg_inherits
+        WHERE inhparent = 'public.oferta_vetor'::regclass
+    LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'streamlit_readonly') THEN
+            EXECUTE format('GRANT SELECT ON TABLE %s TO streamlit_readonly', particao);
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pipeline_writer') THEN
+            EXECUTE format('GRANT SELECT ON TABLE %s TO pipeline_writer', particao);
+        END IF;
+    END LOOP;
+
+    -- O índice pai e os filhos nascem de novo na mesma transação: o commit não
+    -- deixa a busca só com varredura sequencial.
+    IF to_regclass('public.idx_oferta_vetor_embedding') IS NOT NULL THEN
+        EXECUTE 'DROP INDEX IF EXISTS public.idx_oferta_vetor_embedding';
+    END IF;
+
+    FOR particao IN
+        SELECT inhrelid
+        FROM pg_inherits
+        WHERE inhparent = 'public.oferta_vetor'::regclass
+    LOOP
+        relname := replace(particao::text, '"', '');
+        IF position('.' in relname) > 0 THEN
+            relname := split_part(relname, '.', 2);
+        END IF;
+        idx := format('idx_%s_hnsw', relname);
+        IF relname ~ '^oferta_vetor_[0-9]{4}_[0-9]{2}$' THEN
+            mes := to_date(replace(substring(relname from '[0-9]{4}_[0-9]{2}$'), '_', '-'), 'YYYY-MM');
+            IF mes >= corte THEN
+                IF to_regclass(format('public.%I', idx)) IS NULL THEN
+                    EXECUTE format(
+                        'CREATE INDEX %I ON %s USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)',
+                        idx,
+                        particao
+                    );
+                END IF;
+            ELSE
+                EXECUTE format('DROP INDEX IF EXISTS public.%I', idx);
+            END IF;
+        ELSE
+            EXECUTE format('DROP INDEX IF EXISTS public.%I', idx);
+        END IF;
+    END LOOP;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION manter_particoes_oferta_vetor() FROM PUBLIC;
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     versao TEXT PRIMARY KEY,
     aplicada_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -339,5 +561,10 @@ INSERT INTO schema_migrations (versao) VALUES
     ('016_fadiga_anuncio'),
     ('017_custo_modelo_e_vetor_mensal'),
     ('018_preco_pagina_e_grupo'),
-    ('019_cogs_fornecedor_e_provas')
+    ('019_cogs_fornecedor_e_provas'),
+    ('020_falha_ia_definitiva'),
+    ('021_preco_origem'),
+    ('022_paridade_cambio'),
+    ('023_integracao_evento'),
+    ('024_particoes_oferta_vetor')
 ON CONFLICT (versao) DO NOTHING;

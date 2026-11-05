@@ -1,5 +1,11 @@
 # Encaminha o CDP do Chrome (127.0.0.1:9222) para o adaptador virtual do WSL,
 # que é o único endereço que os contêineres do Rancher Desktop conseguem alcançar.
+#
+# O Chrome não autentica o CDP: não há token que ele honre. O listener fica no IP
+# do vEthernet (não em 0.0.0.0 e não em 127.0.0.1, porque 127.0.0.1 quebraria
+# host.docker.internal). Isso só é aceitável com firewall restringindo a origem
+# ao tráfego do Docker/WSL. O bind no IP do adaptador é o limite seguro sem
+# cortar o fluxo do ad-producer.
 $ErrorActionPreference = 'Stop'
 
 $listenIp = (

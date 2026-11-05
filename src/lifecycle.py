@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 pool_db: ConnectionPool | None = None
 _CHAVE_VIDEO = re.compile(r"(?:^|/)(videos/[A-Za-z0-9_-]+\.mp4)$")
+_CHAVE_REVIEW = re.compile(r"^reviews/\d+/[a-f0-9]{32}\.webp$")
 _CHAVES_R2 = (
     "CLOUDFLARE_R2_ACCOUNT_ID",
     "CLOUDFLARE_R2_ACCESS_KEY",
@@ -64,7 +66,7 @@ LIMIT 100
 """
 
 OFERTA_ELEGIVEL_TRAVADA_SQL = """
-SELECT id, url_video_r2
+SELECT id, url_video_r2, provas_sociais
 FROM ofertas
 WHERE id = %s
   AND score < 40
@@ -205,6 +207,14 @@ def _expirar_uma(oferta: dict, cliente) -> bool:
                         conn.rollback()
                         return False
 
+            for chave_review in _chaves_review(oferta_travada.get("provas_sociais")):
+                if _review_compartilhada(cur, oferta_id, chave_review):
+                    continue
+                if not _apagar_objeto(cliente, chave_review):
+                    logger.warning("Oferta %s mantida: falha ao apagar a review %s.", oferta_id, chave_review)
+                    conn.rollback()
+                    return False
+
             cur.execute("DELETE FROM ofertas WHERE id = %s", (oferta_id,))
             removida = cur.rowcount == 1
             conn.commit()
@@ -212,6 +222,42 @@ def _expirar_uma(oferta: dict, cliente) -> bool:
     if removida:
         logger.info("Oferta %s expirada.", oferta_id)
     return removida
+
+
+def _chaves_review(provas: object) -> list[str]:
+    if isinstance(provas, str):
+        try:
+            provas = json.loads(provas)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(provas, list):
+        return []
+    chaves = []
+    for item in provas:
+        if not isinstance(item, dict):
+            continue
+        foto = item.get("foto_url")
+        if isinstance(foto, str) and _CHAVE_REVIEW.fullmatch(foto):
+            chaves.append(foto)
+    return chaves
+
+
+def _review_compartilhada(cur, oferta_id: int, chave: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM ofertas
+        WHERE id <> %s
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(COALESCE(provas_sociais, '[]'::jsonb)) AS elem
+            WHERE elem->>'foto_url' = %s
+          )
+        LIMIT 1
+        """,
+        (oferta_id, chave),
+    )
+    return cur.fetchone() is not None
 
 
 @app.task(name="tasks.lifecycle.expirar_ofertas_fracas")
@@ -231,3 +277,8 @@ def expirar_ofertas_fracas() -> dict:
         if neste_lote == 0:
             break
     return {"status": "expired", "removidas": removidas}
+
+
+import src.operacao as operacao  # noqa: E402,F401
+
+_ = operacao

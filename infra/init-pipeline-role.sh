@@ -79,7 +79,15 @@ GRANT UPDATE (
     processamento_iniciado_em,
     processamento_token,
     falhas_ia,
-    falhas_ia_em
+    falhas_ia_em,
+    falhas_ia_transporte,
+    resposta_ia_bruta,
+    resposta_ia_motivo,
+    preco_origem,
+    venda_brl,
+    cogs_brl,
+    paridade_vigencia,
+    paridade_fonte
 ) ON TABLE ofertas TO pipeline_writer;
 
 DO $$
@@ -98,6 +106,15 @@ BEGIN
   END IF;
   IF to_regclass('public.oferta_vetor') IS NOT NULL THEN
     GRANT SELECT ON TABLE oferta_vetor TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.falha_ia_definitiva') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE ON TABLE falha_ia_definitiva TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.falha_ia_definitiva_id_seq') IS NOT NULL THEN
+    GRANT USAGE, SELECT ON SEQUENCE falha_ia_definitiva_id_seq TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.paridade_cambio') IS NOT NULL THEN
+    GRANT SELECT ON TABLE paridade_cambio TO pipeline_writer;
   END IF;
 END $$;
 

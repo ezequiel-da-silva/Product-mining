@@ -4,7 +4,9 @@ import json
 import logging
 from urllib.parse import urlsplit
 
+from src.cambio import completar_brl
 from src.landing import buscar_html, host_publico
+from src.provas_r2 import arquivar_fotos
 from src.provas_sociais import extrair_provas, url_http_publica
 from src.sourcing import (
     Candidato,
@@ -145,6 +147,8 @@ def aplicar_fornecedor(conn, linha: dict) -> bool:
     html_destino = buscar_html(destino.strip()) if isinstance(destino, str) and destino.strip() else None
     imagem = resolver_imagem(linha.get("url_imagem_criativo"), html_destino)
     escolhido, provas = consultar_imagem(imagem) if imagem else (None, [])
+    if provas:
+        provas = arquivar_fotos(linha.get("id"), provas)
     margem = None
     if escolhido is not None:
         margem = margem_com_cogs(
@@ -168,6 +172,15 @@ def aplicar_fornecedor(conn, linha: dict) -> bool:
             },
         )
         gravou = cur.rowcount == 1
+        if gravou and escolhido is not None and isinstance(linha.get("id"), int):
+            completar_brl(
+                cur,
+                linha["id"],
+                linha.get("preco_oferta_estimado"),
+                linha.get("preco_moeda"),
+                escolhido.preco,
+                escolhido.moeda,
+            )
     conn.commit()
     if gravou and escolhido is not None:
         logger.info("Oferta %s recebeu COGS de %s.", linha.get("id"), escolhido.origem)
