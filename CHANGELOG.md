@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.6.0...v0.7.0) (2026-11-05)
+
+
+### Features
+
+* classifica cloaking, Shopify e paridade em BRL ([1a85770](https://github.com/ezequiel-da-silva/Product-mining/commit/1a85770aca87852af1536d8141b9e2f06a1f9eb5))
+* fecha o painel, o proxy opcional e a regressão de prompt ([f190e7a](https://github.com/ezequiel-da-silva/Product-mining/commit/f190e7ab52ed28061097d2510af36ef4468c9181))
+* persiste a DLQ de IA e reprocessa pela tabela ([c0fd0f5](https://github.com/ezequiel-da-silva/Product-mining/commit/c0fd0f556b837177d690d73a7f9496f2116fadf8))
+* registra falha de IA, preço, câmbio e partições ([ba108c7](https://github.com/ezequiel-da-silva/Product-mining/commit/ba108c704a4433abc96ba5cccd1d2073daf29397))
+
+
+### Bug Fixes
+
+* grava a chave do R2 e assina só na leitura ([94a9477](https://github.com/ezequiel-da-silva/Product-mining/commit/94a947720891d86bcd6ff81126d514e67140336e))
+* prende a sessão CDP na aba da Biblioteca ([df92c49](https://github.com/ezequiel-da-silva/Product-mining/commit/df92c49e13e06a68ae1a38aac1de195672841a97))
+* torna tests/avaliacao um pacote para o pytest do CI ([9a1f3ab](https://github.com/ezequiel-da-silva/Product-mining/commit/9a1f3ab41f550ad4e53990dd298ad0fd91954be9))
+
 ## [0.6.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.5.0...v0.6.0) (2026-11-05)
 
 
