@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.7.0...v0.8.0) (2026-11-05)
+
+
+### Features
+
+* separa a rede, segura o egress e recupera o evento órfão ([1021343](https://github.com/ezequiel-da-silva/Product-mining/commit/1021343f244a1b74c428ccfe40e1a9dd368f3bd5))
+* separa a rede, segura o egress e recupera o evento órfão ([77bd514](https://github.com/ezequiel-da-silva/Product-mining/commit/77bd514f349bb251ead4d877d001978832f8bcd8))
+
 ## [0.7.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.6.0...v0.7.0) (2026-11-05)
 
 
