@@ -34,6 +34,7 @@ from src.agrupamento import vincular_grupo  # noqa: E402
 from src.comercial import aplicar_preco_lido, qualificar_pagina  # noqa: E402
 from src.midia_r2 import url_leitura  # noqa: E402
 from src.phash_visual import LIMIAR_HAMMING  # noqa: E402
+from src.reprocesso_ia import classe_da_excecao, revalidar_texto  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -74,6 +75,22 @@ def _close_db_pool(**_kwargs):
         pool_db = None
 
 
+def _aplicar_governanca_prompt(config: object) -> tuple[str, float]:
+    """O YAML só troca o literal se o modelo for o contratado e a temperatura estiver em [0, 1]."""
+    modelo = "gemini-3.8-flash"
+    temperatura = 0.2
+    if not isinstance(config, dict):
+        return modelo, temperatura
+    if config.get("model") == "gemini-3.8-flash":
+        modelo = "gemini-3.8-flash"
+    lida = config.get("temperature")
+    if isinstance(lida, (int, float)) and not isinstance(lida, bool) and 0 <= float(lida) <= 1:
+        temperatura = float(lida)
+    return modelo, temperatura
+
+
+MODELO_ANALISE = "gemini-3.8-flash"
+TEMPERATURA_ANALISE = 0.2
 PERSONA_PATH = os.path.join(BASE_DIR, "prompts", "system_persona.yaml")
 ANGULO_PATH = os.path.join(BASE_DIR, "prompts", "angulo_ab.jinja")
 instrucao_sistema = (
@@ -86,16 +103,16 @@ if os.path.exists(PERSONA_PATH):
     try:
         with open(PERSONA_PATH, "r", encoding="utf-8") as f:
             config_persona = yaml.safe_load(f)
-            lida = config_persona.get("instruction")
-            if isinstance(lida, str) and lida.strip():
-                instrucao_sistema = lida.strip()
-            lida_angulo = config_persona.get("angulo_instruction")
-            if isinstance(lida_angulo, str) and lida_angulo.strip():
-                instrucao_angulo = lida_angulo.strip()
+            if isinstance(config_persona, dict):
+                lida = config_persona.get("instruction")
+                if isinstance(lida, str) and lida.strip():
+                    instrucao_sistema = lida.strip()
+                lida_angulo = config_persona.get("angulo_instruction")
+                if isinstance(lida_angulo, str) and lida_angulo.strip():
+                    instrucao_angulo = lida_angulo.strip()
+            MODELO_ANALISE, TEMPERATURA_ANALISE = _aplicar_governanca_prompt(config_persona)
     except Exception as e:
         logger.warning(f"Falha ao ler {PERSONA_PATH}, usando instrução padrão: {e}")
-
-MODELO_ANALISE = "gemini-3.8-flash"
 MODELO_EMBEDDING = "gemini-embedding-2"
 DIMENSAO_EMBEDDING = 768
 FILA_DEAD_LETTER = "ai_dead_letter"
@@ -168,8 +185,73 @@ def _reservar_oferta_para_processamento(oferta_id: int) -> tuple[str, int, str |
             return "unavailable", 0, None
 
 
+_contexto_falha: dict | None = None
+TETO_RESPOSTA_BRUTA = 20_000
+TETO_MOTIVO_IA = 500
+
+
+def _gravar_falha_definitiva(cur, oferta_id: int, contexto: dict) -> None:
+    """A linha na tabela existe antes de qualquer publicação na fila."""
+    estrutural = contexto.get("classe") == "estrutural"
+    bruta = contexto.get("bruta") if estrutural else None
+    if isinstance(bruta, str):
+        bruta = bruta[:TETO_RESPOSTA_BRUTA] or None
+    else:
+        bruta = None
+    motivo = str(contexto.get("motivo") or "")[:TETO_MOTIVO_IA] or None
+    cur.execute(
+        """
+        UPDATE ofertas
+        SET falhas_ia = falhas_ia + %(inc_estrutural)s,
+            falhas_ia_transporte = falhas_ia_transporte + %(inc_transporte)s,
+            falhas_ia_em = CASE
+                WHEN %(inc_estrutural)s = 1 THEN CURRENT_TIMESTAMP
+                ELSE falhas_ia_em
+            END,
+            resposta_ia_bruta = CASE
+                WHEN %(inc_estrutural)s = 1 THEN %(bruta)s
+                ELSE resposta_ia_bruta
+            END,
+            resposta_ia_motivo = CASE
+                WHEN %(inc_estrutural)s = 1 THEN %(motivo)s
+                ELSE resposta_ia_motivo
+            END
+        WHERE id = %(id)s
+        """,
+        {
+            "inc_estrutural": int(estrutural),
+            "inc_transporte": int(not estrutural),
+            "bruta": bruta,
+            "motivo": motivo if estrutural else None,
+            "id": oferta_id,
+        },
+    )
+    analise = contexto.get("analise")
+    uso = contexto.get("uso_tokens")
+    cur.execute(
+        """
+        INSERT INTO falha_ia_definitiva (
+            oferta_id, video_url_r2, ad_copy_texto, analise, uso_tokens, erro, classe, estado
+        ) VALUES (
+            %(oferta_id)s, %(video)s, %(copy)s, %(analise)s::jsonb, %(uso)s::jsonb, %(erro)s, %(classe)s, 'pendente'
+        )
+        """,
+        {
+            "oferta_id": oferta_id,
+            "video": contexto.get("video_url_r2"),
+            "copy": contexto.get("ad_copy_texto"),
+            "analise": json.dumps(analise) if isinstance(analise, dict) else None,
+            "uso": json.dumps(uso) if isinstance(uso, dict) else None,
+            "erro": str(contexto.get("erro") or "")[:TETO_MOTIVO_IA],
+            "classe": "estrutural" if estrutural else "transporte",
+        },
+    )
+
+
 def _liberar_reserva_erro(oferta_id: int, token: str, definitiva: bool = False):
     """Restaura somente a reserva pertencente a esta execução."""
+    contexto = _contexto_falha if definitiva else None
+    incremento = 0 if contexto else int(definitiva)
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -184,8 +266,10 @@ def _liberar_reserva_erro(oferta_id: int, token: str, definitiva: bool = False):
                   AND status_qualificacao = 'processando_ia'
                   AND processamento_token = %(token)s;
                 """,
-                {"incremento": int(definitiva), "id": oferta_id, "token": token},
+                {"incremento": incremento, "id": oferta_id, "token": token},
             )
+            if contexto:
+                _gravar_falha_definitiva(cur, oferta_id, contexto)
             conn.commit()
 
 
@@ -704,6 +788,27 @@ def _publicar_falha_definitiva(
     )
 
 
+def _montar_contexto_falha(
+    erro: Exception,
+    analise: dict | None,
+    uso_tokens: dict | None,
+    video_url_r2: str | None,
+    ad_copy_texto: str | None,
+    resposta_bruta: str | None,
+) -> dict:
+    classe = classe_da_excecao(erro)
+    return {
+        "classe": classe,
+        "bruta": resposta_bruta if classe == "estrutural" else None,
+        "motivo": f"{type(erro).__name__}: {erro}",
+        "analise": analise,
+        "uso_tokens": uso_tokens,
+        "video_url_r2": video_url_r2,
+        "ad_copy_texto": ad_copy_texto,
+        "erro": f"{type(erro).__name__}: {erro}",
+    }
+
+
 def _tratar_falha_processamento(
     task,
     oferta_id: int,
@@ -714,17 +819,28 @@ def _tratar_falha_processamento(
     video_url_r2: str | None = None,
     ad_copy_texto: str | None = None,
     republicar: bool = True,
+    resposta_bruta: str | None = None,
 ) -> dict:
+    global _contexto_falha
     configuracao = _erro_configuracao(erro)
     definitiva = not configuracao and (_erro_permanente(erro) or task.request.retries >= task.max_retries)
+    entregue = False
     try:
-        _liberar_reserva_erro(oferta_id, lease_token, definitiva)
+        _contexto_falha = (
+            _montar_contexto_falha(erro, analise, uso_tokens, video_url_r2, ad_copy_texto, resposta_bruta)
+            if definitiva and republicar
+            else None
+        )
+        _liberar_reserva_erro(oferta_id, lease_token, definitiva and republicar)
+        entregue = True
     except Exception as cleanup_error:
         logger.exception(
             "[Oferta %s] Falha ao liberar reserva após erro: %s",
             oferta_id,
             cleanup_error,
         )
+    finally:
+        _contexto_falha = None
     if configuracao:
         logger.critical(
             "[Oferta %s] Erro de configuração do Gemini; oferta não penalizada: %s",
@@ -733,17 +849,26 @@ def _tratar_falha_processamento(
         )
         return {"status": "config_error", "oferta_id": oferta_id}
     if definitiva:
+        if not entregue:
+            return {"status": "erro_persistencia", "oferta_id": oferta_id}
         if republicar:
-            _publicar_falha_definitiva(
-                oferta_id,
-                video_url_r2,
-                ad_copy_texto,
-                analise,
-                uso_tokens,
-                erro,
-            )
+            try:
+                _publicar_falha_definitiva(
+                    oferta_id,
+                    video_url_r2,
+                    ad_copy_texto,
+                    analise,
+                    uso_tokens,
+                    erro,
+                )
+            except Exception:
+                logger.exception(
+                    "[Oferta %s] A fila %s não recebeu a falha; a tabela segue como reprocesso.",
+                    oferta_id,
+                    FILA_DEAD_LETTER,
+                )
             logger.error(
-                "[Oferta %s] Falha permanente publicada em %s (%s): %s",
+                "[Oferta %s] Falha permanente gravada e publicada em %s (%s): %s",
                 oferta_id,
                 FILA_DEAD_LETTER,
                 type(erro).__name__,
@@ -776,7 +901,7 @@ def _parte_video(video_file):
 
 def _config_geracao():
     return types.GenerateContentConfig(
-        temperature=0.2,
+        temperature=TEMPERATURA_ANALISE,
         response_mime_type="application/json",
         response_schema=AnaliseAnuncioSchema,
         system_instruction=instrucao_sistema,
@@ -874,6 +999,7 @@ def _processar_anuncio(
     video_file = None
     tmp_path = None
     resultado_validado = None
+    resposta_bruta = None
 
     try:
         if analise:
@@ -893,7 +1019,9 @@ def _processar_anuncio(
                 config=_config_geracao(),
             )
             uso_tokens = _registrar_uso_tokens(oferta_id, resposta)
-            dados_extraidos = json.loads(resposta.text)
+            texto = getattr(resposta, "text", None)
+            resposta_bruta = texto if isinstance(texto, str) else None
+            dados_extraidos = json.loads(resposta_bruta or "")
             resultado_validado = AnaliseAnuncioSchema(**_enquadrar_nicho(dados_extraidos))
 
         vetor_embedding = _obter_vetor_embedding(oferta_id, resultado_validado.model_dump())
@@ -931,6 +1059,7 @@ def _processar_anuncio(
             video_url_r2,
             ad_copy_texto,
             republicar_falha,
+            resposta_bruta,
         )
 
     finally:
@@ -995,6 +1124,98 @@ def reprocessar_falha_definitiva(
         uso_tokens,
         republicar_falha=False,
     )
+
+
+def _ler_falha(falha_id: int) -> dict | None:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, oferta_id, classe, video_url_r2, ad_copy_texto, uso_tokens, estado
+                FROM falha_ia_definitiva
+                WHERE id = %(id)s
+                """,
+                {"id": falha_id},
+            )
+            linha = cur.fetchone()
+        conn.commit()
+    return linha if isinstance(linha, dict) else None
+
+
+def _ler_resposta_bruta(oferta_id: int) -> str | None:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT resposta_ia_bruta FROM ofertas WHERE id = %(id)s",
+                {"id": oferta_id},
+            )
+            linha = cur.fetchone()
+        conn.commit()
+    if isinstance(linha, dict) and isinstance(linha.get("resposta_ia_bruta"), str):
+        return linha["resposta_ia_bruta"]
+    return None
+
+
+def _atualizar_estado_falha(falha_id: int, estado: str, incrementar: bool) -> None:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            if incrementar:
+                cur.execute(
+                    """
+                    UPDATE falha_ia_definitiva
+                    SET tentativas = tentativas + 1,
+                        estado = CASE
+                            WHEN tentativas + 1 >= 3 THEN 'esgotada'
+                            ELSE 'pendente'
+                        END,
+                        reprocessado_em = CURRENT_TIMESTAMP
+                    WHERE id = %(id)s
+                    """,
+                    {"id": falha_id},
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE falha_ia_definitiva
+                    SET estado = %(estado)s,
+                        reprocessado_em = CURRENT_TIMESTAMP
+                    WHERE id = %(id)s
+                    """,
+                    {"id": falha_id, "estado": estado},
+                )
+        conn.commit()
+
+
+@app.task(bind=True, max_retries=0, name="src.worker_ia.reprocessar_falha_da_tabela")
+def reprocessar_falha_da_tabela(self, falha_id: int):
+    """Reprocesso oficial da tabela. Estrutural com texto bruto não chama generate_content."""
+    linha = _ler_falha(int(falha_id))
+    if not isinstance(linha, dict) or linha.get("estado") != "em_reprocesso":
+        return {"status": "ignorada", "falha_id": falha_id}
+    analise = None
+    if linha.get("classe") == "estrutural":
+        analise = revalidar_texto(_ler_resposta_bruta(int(linha["oferta_id"])))
+        if analise is None:
+            _atualizar_estado_falha(int(falha_id), "esgotada", False)
+            return {"status": "esgotada", "falha_id": falha_id}
+    uso = linha.get("uso_tokens")
+    resultado = _processar_anuncio(
+        self,
+        int(linha["oferta_id"]),
+        linha.get("video_url_r2") or "",
+        linha.get("ad_copy_texto") or "",
+        analise,
+        uso if isinstance(uso, dict) else None,
+        republicar_falha=False,
+    )
+    if isinstance(resultado, dict) and resultado.get("status") in {"dead_letter", "erro_persistencia"}:
+        _atualizar_estado_falha(int(falha_id), "pendente", True)
+        return resultado
+    if isinstance(resultado, dict) and resultado.get("status") in {"config_error", "stale_lease", "not_found"}:
+        _atualizar_estado_falha(int(falha_id), "pendente", False)
+        return resultado
+    _atualizar_estado_falha(int(falha_id), "resolvida", False)
+    return resultado
 
 
 SQL_OFERTAS_EM_TESTE = """
@@ -1090,7 +1311,7 @@ def _gerar_angulo(oferta: dict) -> bool:
         model=MODELO_ANALISE,
         contents=_texto_do_angulo(oferta),
         config=types.GenerateContentConfig(
-            temperature=0.2,
+            temperature=TEMPERATURA_ANALISE,
             response_mime_type="application/json",
             response_schema=GeracaoAnguloSchema,
             system_instruction=instrucao_angulo,
