@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.4.1...v0.5.0) (2026-11-05)
+
+
+### Features
+
+* introduce angle generation and grouping for offers ([f28065a](https://github.com/ezequiel-da-silva/Product-mining/commit/f28065a85c938030281945bacf39036b812613b4))
+
+
+### Bug Fixes
+
+* unblock the 0.5.0 quality and migration checks ([#8](https://github.com/ezequiel-da-silva/Product-mining/issues/8)) ([808981d](https://github.com/ezequiel-da-silva/Product-mining/commit/808981d2a8ef3892665985b99698cab1d0905190))
+
 ## [0.4.1](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.4.0...v0.4.1) (2026-10-30)
 
 
