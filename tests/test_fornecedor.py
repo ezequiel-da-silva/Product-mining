@@ -51,6 +51,14 @@ def test_aplicar_fornecedor_grava_cogs_e_depoimento(monkeypatch):
 
     monkeypatch.setattr(fornecedor, "buscar_html", html)
     monkeypatch.setattr(fornecedor, "host_publico", lambda _host: True)
+    monkeypatch.setattr(
+        fornecedor,
+        "arquivar_fotos",
+        lambda _oferta_id, provas: [
+            {chave: valor for chave, valor in prova.items() if chave != "foto_url"} for prova in provas
+        ],
+    )
+    monkeypatch.setattr(fornecedor, "completar_brl", lambda *_args, **_kwargs: False)
     cursor = MagicMock()
     cursor.rowcount = 1
     conexao = MagicMock()
@@ -75,7 +83,8 @@ def test_aplicar_fornecedor_grava_cogs_e_depoimento(monkeypatch):
     assert params["margem"] is None
     assert params["imagem"] == "https://cdn.example/og.jpg"
     assert "Tecido firme" in params["provas"]
-    assert "https://img.example/cliente.jpg" in params["provas"]
+    assert "foto_url" not in params["provas"]
+    assert "https://img.example/cliente.jpg" not in params["provas"]
     conexao.commit.assert_called_once()
 
 

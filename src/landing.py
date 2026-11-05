@@ -364,3 +364,153 @@ def buscar_preco(url: str) -> PrecoLido | None:
     if not corpo:
         return None
     return extrair_preco_html(corpo)
+
+
+MIN_CORPO_PAGINA = 800
+_MARCAS_BLOQUEIO = (
+    "cf-turnstile",
+    "challenges.cloudflare.com",
+    "g-recaptcha",
+    "hcaptcha",
+    "just a moment",
+)
+_PRODUTO_SHOPIFY = re.compile(r"/products/([^/?#]+)")
+
+
+@dataclass(frozen=True)
+class LeituraPagina:
+    origem: str
+    preco: PrecoLido | None = None
+
+
+def _preco_json_ld(html: str) -> PrecoLido | None:
+    for bloco in _JSON_LD.findall(html):
+        try:
+            dados = json.loads(bloco)
+        except json.JSONDecodeError:
+            continue
+        preco = _preco_no_objeto(dados)
+        if preco is not None:
+            return preco
+    return None
+
+
+def _preco_meta(html: str) -> PrecoLido | None:
+    moeda_meta = _moeda_na_meta(html)
+    for meta in _META_PRECO.findall(html):
+        conteudo = _CONTEUDO_META.search(meta)
+        if conteudo:
+            preco = ler_preco(conteudo.group(1), moeda_meta)
+            if preco is not None:
+                return preco
+    return None
+
+
+def _pagina_bloqueada(html: str) -> bool:
+    if len(html.encode("utf-8")) < MIN_CORPO_PAGINA:
+        return True
+    texto = html.casefold()
+    return any(marca in texto for marca in _MARCAS_BLOQUEIO)
+
+
+def classificar_pagina(html: str) -> LeituraPagina:
+    """Corpo curto ou desafio vira bloqueado. JSON-LD e meta divergentes não gravam preço."""
+    if not isinstance(html, str) or _pagina_bloqueada(html):
+        return LeituraPagina("bloqueado")
+    json_ld = _preco_json_ld(html)
+    meta = _preco_meta(html)
+    if json_ld is not None and meta is not None and (json_ld.valor != meta.valor or json_ld.moeda != meta.moeda):
+        return LeituraPagina("divergente")
+    if json_ld is not None:
+        return LeituraPagina("json_ld", json_ld)
+    if meta is not None:
+        return LeituraPagina("html", meta)
+    texto = extrair_preco_html(html)
+    if texto is not None:
+        return LeituraPagina("html", texto)
+    return LeituraPagina("ausente")
+
+
+def _e_shopify(url: str) -> bool:
+    return "shopify" in url.casefold()
+
+
+def _url_produto_js(url: str) -> str | None:
+    partes = urlsplit(url)
+    encontrado = _PRODUTO_SHOPIFY.search(partes.path or "")
+    if not encontrado or not partes.hostname:
+        return None
+    handle = encontrado.group(1)
+    if handle.endswith(".js"):
+        handle = handle[:-3]
+    if not handle:
+        return None
+    return f"https://{partes.hostname}/products/{handle}.js"
+
+
+def _moeda_do_json(dados: dict) -> str | None:
+    for chave in ("currency", "priceCurrency", "currencyCode", "price_currency"):
+        moeda = _moeda_explicita(dados.get(chave))
+        if moeda in _MOEDAS:
+            return moeda
+    return None
+
+
+def _preco_centavos(valor: object, moeda: str) -> PrecoLido | None:
+    if isinstance(valor, bool) or valor is None:
+        return None
+    if isinstance(valor, str) and re.fullmatch(r"\d+", valor.strip()):
+        valor = int(valor.strip())
+    if isinstance(valor, float) and valor.is_integer():
+        valor = int(valor)
+    if isinstance(valor, int):
+        texto = f"{(Decimal(valor) / Decimal(100)):.2f}"
+        return ler_preco(texto, moeda)
+    if isinstance(valor, str):
+        return ler_preco(valor, moeda)
+    return None
+
+
+def _preco_shopify_json(texto: str) -> PrecoLido | None:
+    try:
+        dados = json.loads(texto)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(dados, dict):
+        return None
+    moeda = _moeda_do_json(dados)
+    bruto = dados.get("price")
+    if moeda is None and isinstance(dados.get("variants"), list):
+        for variante in dados["variants"]:
+            if isinstance(variante, dict):
+                moeda = _moeda_do_json(variante)
+                bruto = variante.get("price")
+                if moeda:
+                    break
+    if moeda not in _MOEDAS:
+        return None
+    return _preco_centavos(bruto, moeda)
+
+
+def _shopify_quando_falha(url: str, leitura: LeituraPagina) -> LeituraPagina:
+    if leitura.origem not in {"ausente", "bloqueado"} or not _e_shopify(url):
+        return leitura
+    destino = _url_produto_js(url)
+    if not destino:
+        return leitura
+    corpo = buscar_html(destino)
+    if not isinstance(corpo, str):
+        return leitura
+    preco = _preco_shopify_json(corpo)
+    if preco is None:
+        return leitura
+    return LeituraPagina("shopify_json", preco)
+
+
+def avaliar_destino(url: str) -> LeituraPagina:
+    """Classifica a página. Shopify .js só entra se a página veio ausente ou bloqueada."""
+    if not isinstance(url, str) or not url.strip():
+        return LeituraPagina("ausente")
+    corpo = buscar_html(url.strip())
+    leitura = classificar_pagina(corpo) if isinstance(corpo, str) else LeituraPagina("bloqueado")
+    return _shopify_quando_falha(url.strip(), leitura)

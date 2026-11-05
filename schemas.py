@@ -3,6 +3,8 @@ from typing import List, Literal, Optional, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
+_CAMPOS_PROIBIDOS = {"fornecedor", "cogs", "cogs_estimado", "depoimento", "provas_sociais", "foto_url"}
+
 # Categorias fechadas de D2C/dropshipping. "Outros" exige sub_nicho descritivo.
 NichoCanonico = Literal[
     "Saúde e Beleza",
@@ -93,6 +95,13 @@ class AnaliseAnuncioSchema(BaseModel):
         ge=0,
         le=100,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def rejeitar_campos_de_fornecedor(cls, dados):
+        if isinstance(dados, dict) and _CAMPOS_PROIBIDOS.intersection(dados):
+            raise ValueError("A análise não aceita fornecedor, COGS nem depoimento.")
+        return dados
 
     @model_validator(mode="after")
     def exigir_sub_nicho_em_outros(self) -> "AnaliseAnuncioSchema":
