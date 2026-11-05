@@ -143,6 +143,18 @@ def _visual(valor: object) -> str | None:
     return None
 
 
+def _id_inteiro(valor: object) -> int | None:
+    if isinstance(valor, bool) or not isinstance(valor, int):
+        return None
+    return valor
+
+
+def _acrescentar_id(grupo: set[int], valor: object) -> None:
+    identificador = _id_inteiro(valor)
+    if identificador is not None:
+        grupo.add(identificador)
+
+
 def _parametros(origem: dict) -> dict:
     return {
         "id": origem["id"],
@@ -163,41 +175,42 @@ def _vizinhos(cur, origem: dict) -> list[dict]:
     return criativo + _linhas(cur)
 
 
+def _proximo_nivel(cur, nivel: list[dict], grupo: set[int], vistos: set[int]) -> list[dict]:
+    proximo: list[dict] = []
+    for atual in nivel:
+        for vizinho in _vizinhos(cur, atual):
+            identificador = _id_inteiro(vizinho.get("id"))
+            if identificador is None:
+                continue
+            grupo.add(identificador)
+            _acrescentar_id(grupo, vizinho.get("oferta_canonica_id"))
+            if identificador in vistos:
+                continue
+            vistos.add(identificador)
+            cur.execute(SQL_ORIGEM, {"id": identificador})
+            linha = _linha(cur)
+            if linha is not None and linha.get("status_qualificacao") == "concluido":
+                proximo.append(linha)
+    return proximo
+
+
+def _incluir_membros(cur, grupo: set[int]) -> None:
+    cur.execute(SQL_MEMBROS, {"ids": list(grupo)})
+    for linha in _linhas(cur):
+        _acrescentar_id(grupo, linha.get("id"))
+        _acrescentar_id(grupo, linha.get("oferta_canonica_id"))
+
+
 def _ids_do_grupo(cur, origem: dict) -> set[int]:
     grupo = {int(origem["id"])}
     vistos = {int(origem["id"])}
     nivel = [origem]
     for _ in range(_SALTOS):
-        proximo: list[dict] = []
-        for atual in nivel:
-            for vizinho in _vizinhos(cur, atual):
-                identificador = vizinho.get("id")
-                if not isinstance(identificador, int) or isinstance(identificador, bool):
-                    continue
-                grupo.add(identificador)
-                canonica = vizinho.get("oferta_canonica_id")
-                if isinstance(canonica, int) and not isinstance(canonica, bool):
-                    grupo.add(canonica)
-                if identificador in vistos:
-                    continue
-                vistos.add(identificador)
-                cur.execute(SQL_ORIGEM, {"id": identificador})
-                linha = _linha(cur)
-                if linha is not None and linha.get("status_qualificacao") == "concluido":
-                    proximo.append(linha)
-        nivel = proximo
+        nivel = _proximo_nivel(cur, nivel, grupo, vistos)
         if not nivel:
             break
-    if len(grupo) < 2:
-        return grupo
-    cur.execute(SQL_MEMBROS, {"ids": list(grupo)})
-    for linha in _linhas(cur):
-        identificador = linha.get("id")
-        if isinstance(identificador, int) and not isinstance(identificador, bool):
-            grupo.add(identificador)
-        canonica = linha.get("oferta_canonica_id")
-        if isinstance(canonica, int) and not isinstance(canonica, bool):
-            grupo.add(canonica)
+    if len(grupo) >= 2:
+        _incluir_membros(cur, grupo)
     return grupo
 
 
@@ -235,7 +248,7 @@ def ids_para_agrupar(cur, limite: int) -> list[int]:
     )
     ids: list[int] = []
     for linha in _linhas(cur):
-        identificador = linha.get("id")
-        if isinstance(identificador, int) and not isinstance(identificador, bool):
+        identificador = _id_inteiro(linha.get("id"))
+        if identificador is not None:
             ids.append(identificador)
     return ids
