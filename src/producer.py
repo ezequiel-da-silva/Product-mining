@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import socket
@@ -45,7 +46,10 @@ class FilaIndisponivel(Exception):
 
 
 CDP_HOSTS_PERMITIDOS = {"host.docker.internal"}
+PREFIXO_BIBLIOTECA = "https://www.facebook.com/ads/library"
+LIMITE_CORPO_GRAPHQL = 2_000_000
 _erro_fila: FilaIndisponivel | None = None
+_ouvinte_graphql = False
 
 
 def url_cdp_permitida(host: str, port: str) -> str:
@@ -98,12 +102,27 @@ def _extrair_anuncios(payload: dict) -> list[dict]:
     return list(anuncios.values())
 
 
+def _corpo_graphql(response) -> bytes | None:
+    corpo = response.body()
+    if isinstance(corpo, str):
+        corpo = corpo.encode("utf-8")
+    if not isinstance(corpo, (bytes, bytearray)):
+        return None
+    if len(corpo) > LIMITE_CORPO_GRAPHQL:
+        logger.info("Resposta GraphQL descartada: corpo acima de %s bytes.", LIMITE_CORPO_GRAPHQL)
+        return None
+    return bytes(corpo)
+
+
 def interceptar_graphql(response):
     """Filtra requisições GraphQL da Ad Library e processa criativos[cite: 1]."""
     global _erro_fila
     if "/api/graphql/" in response.url and response.status == 200:
         try:
-            payload = response.json()
+            corpo = _corpo_graphql(response)
+            if corpo is None:
+                return
+            payload = json.loads(corpo)
             if not isinstance(payload, dict):
                 return
 
@@ -133,13 +152,14 @@ def _interromper_se_fila_recusou() -> None:
 
 def rotina_extracao(page):
     """Aplica bypass estrutural e executa rolagem humana controlada[cite: 1]."""
-    global _erro_fila
+    global _erro_fila, _ouvinte_graphql
     _erro_fila = None
     stealth_sync(page)
     logger.info("Modo Stealth ativado.")
 
     page.remove_listener("response", interceptar_graphql)
     page.on("response", interceptar_graphql)
+    _ouvinte_graphql = True
 
     logger.info("Iniciando varredura contínua...")
     for i in range(10):
@@ -161,6 +181,47 @@ def _varrer_com_pausa_de_fila(page) -> None:
             time.sleep(60)
 
 
+def _escolher_pagina_cdp(context):
+    """Usa a única aba da Biblioteca. Não fecha a aba: quem abre é o minerar.ps1."""
+    paginas = list(context.pages)
+    alvo = os.environ.get("CDP_TARGET_URL", "").strip()
+    if alvo:
+        escolhidas = [pagina for pagina in paginas if alvo in (getattr(pagina, "url", "") or "")]
+        if len(escolhidas) != 1:
+            raise RuntimeError(
+                "CDP_TARGET_URL exige exatamente uma aba que contenha o alvo. " f"Encontradas: {len(escolhidas)}."
+            )
+        return escolhidas[0]
+    biblioteca = [pagina for pagina in paginas if (getattr(pagina, "url", "") or "").startswith(PREFIXO_BIBLIOTECA)]
+    if len(biblioteca) == 1:
+        return biblioteca[0]
+    raise RuntimeError("Deixe uma única aba em https://www.facebook.com/ads/library ou defina CDP_TARGET_URL.")
+
+
+def _soltar_ouvinte(page) -> None:
+    global _ouvinte_graphql
+    if page is None or not _ouvinte_graphql:
+        return
+    try:
+        page.remove_listener("response", interceptar_graphql)
+    except Exception:
+        logger.exception("Falha ao remover o ouvinte GraphQL.")
+    _ouvinte_graphql = False
+
+
+def _conectar_e_varrer(cdp_url: str) -> None:
+    with sync_playwright() as p:
+        page = None
+        try:
+            destino = url_cdp_conectavel(cdp_url)
+            browser = p.chromium.connect_over_cdp(destino, timeout=30000)
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = _escolher_pagina_cdp(context)
+            _varrer_com_pausa_de_fila(page)
+        finally:
+            _soltar_ouvinte(page)
+
+
 def executar_sessao_cdp(cdp_url: str):
     """Mantém a conexão CDP resiliente com reconexão exponencial[cite: 1]."""
     tentativas = 0
@@ -168,15 +229,10 @@ def executar_sessao_cdp(cdp_url: str):
 
     while tentativas < max_tentativas:
         try:
-            with sync_playwright() as p:
-                destino = url_cdp_conectavel(cdp_url)
-                logger.info(f"Tentando conectar ao CDP em {destino} (Tentativa {tentativas + 1}/{max_tentativas})...")
-                browser = p.chromium.connect_over_cdp(destino, timeout=30000)
-                context = browser.contexts[0] if browser.contexts else browser.new_context()
-                page = context.pages[0] if context.pages else context.new_page()
-
-                _varrer_com_pausa_de_fila(page)
-                tentativas = 0
+            destino = url_cdp_conectavel(cdp_url)
+            logger.info(f"Tentando conectar ao CDP em {destino} (Tentativa {tentativas + 1}/{max_tentativas})...")
+            _conectar_e_varrer(cdp_url)
+            tentativas = 0
 
         except Exception as e:
             tentativas += 1
