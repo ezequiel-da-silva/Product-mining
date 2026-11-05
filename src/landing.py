@@ -325,8 +325,8 @@ def _ler_corpo(resposta: requests.Response) -> str | None:
     return b"".join(pedacos).decode("utf-8", errors="replace")
 
 
-def buscar_preco(url: str) -> PrecoLido | None:
-    """Busca o preço na URL desta oferta. Recusa rede local e não segue redirect às cegas."""
+def buscar_html(url: str) -> str | None:
+    """Lê o HTML no IP já validado. Recusa rede local e não segue redirect às cegas."""
     atual = url
     for _ in range(MAX_REDIRECIONAMENTOS + 1):
         partes = urlsplit(atual)
@@ -334,12 +334,12 @@ def buscar_preco(url: str) -> PrecoLido | None:
             return None
         ips = resolver_publico(partes.hostname)
         if not ips:
-            logger.info("Página de destino recusada por host não público.")
+            logger.info("Página recusada por host não público.")
             return None
         try:
             resposta = _abrir_pagina(atual, partes.hostname, ips[0])
         except requests.RequestException:
-            logger.info("Falha ao ler a página de destino.")
+            logger.info("Falha ao ler a página.")
             return None
         try:
             if resposta.is_redirect:
@@ -352,10 +352,15 @@ def buscar_preco(url: str) -> PrecoLido | None:
                 continue
             if resposta.status_code != 200:
                 return None
-            corpo = _ler_corpo(resposta)
+            return _ler_corpo(resposta)
         finally:
             resposta.close()
-        if not corpo:
-            return None
-        return extrair_preco_html(corpo)
     return None
+
+
+def buscar_preco(url: str) -> PrecoLido | None:
+    """Busca o preço na URL desta oferta."""
+    corpo = buscar_html(url)
+    if not corpo:
+        return None
+    return extrair_preco_html(corpo)

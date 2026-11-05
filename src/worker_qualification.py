@@ -31,6 +31,7 @@ from core.pontuacao import (  # noqa: E402
 from core.secrets import ler_segredo  # noqa: E402
 from src.agrupamento import ids_para_agrupar, vincular_grupo  # noqa: E402
 from src.comercial import aplicar_preco_lido, listar_precos_ausentes, qualificar_pagina  # noqa: E402
+from src.fornecedor import aplicar_fornecedor, listar_sem_fornecedor  # noqa: E402
 from src.midia_r2 import referencia_armazenada  # noqa: E402
 from src.phash_visual import LIMIAR_HAMMING, CapturaQuadro  # noqa: E402
 
@@ -108,6 +109,34 @@ def _normalizar_cta(value: object) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", normalized.upper()).strip("_")
 
 
+def _url_https(valor: object) -> str | None:
+    if not isinstance(valor, str):
+        return None
+    texto = valor.strip()
+    partes = urlsplit(texto)
+    if partes.scheme != "https" or not partes.hostname or partes.username or partes.password:
+        return None
+    return texto
+
+
+def _imagem_criativo(snapshot: dict, card: dict) -> str | None:
+    candidatos: list[object] = []
+    for origem in (snapshot, card):
+        imagens = origem.get("images")
+        if isinstance(imagens, list):
+            for imagem in imagens:
+                if isinstance(imagem, dict):
+                    candidatos.append(imagem.get("original_image_url") or imagem.get("resized_image_url"))
+                else:
+                    candidatos.append(imagem)
+        candidatos.append(origem.get("original_image_url"))
+    for candidato in candidatos:
+        url = _url_https(candidato)
+        if url:
+            return url
+    return None
+
+
 def _extrair_payload(payload: dict) -> dict:
     snapshot = payload.get("snapshot")
     if not isinstance(snapshot, dict):
@@ -149,6 +178,7 @@ def _extrair_payload(payload: dict) -> dict:
         "tipo_cta": cta if isinstance(cta, str) else None,
         "page_id": str(page_id) if page_id is not None else None,
         "video_url": video_url,
+        "url_imagem_criativo": _imagem_criativo(snapshot, first_card),
         "ad_delivery_start_time": payload.get("ad_delivery_start_time"),
     }
 
@@ -428,11 +458,11 @@ def _persistir_oferta(
                 """
                 INSERT INTO ofertas (
                     url_destino, page_id, copy_texto, tipo_cta,
-                    url_video_r2, score, phash_criativo, phash_perceptual
+                    url_video_r2, url_imagem_criativo, score, phash_criativo, phash_perceptual
                 )
                 VALUES (
                     %(url_destino)s, %(page_id)s, %(copy_texto)s,
-                    %(tipo_cta)s, %(url_video_r2)s, %(score)s, %(phash_criativo)s,
+                    %(tipo_cta)s, %(url_video_r2)s, %(url_imagem_criativo)s, %(score)s, %(phash_criativo)s,
                     %(phash_perceptual)s::bit(64)
                 )
                 ON CONFLICT (url_destino) DO UPDATE
@@ -442,6 +472,7 @@ def _persistir_oferta(
                     copy_texto = COALESCE(NULLIF(EXCLUDED.copy_texto, ''), ofertas.copy_texto),
                     tipo_cta = COALESCE(EXCLUDED.tipo_cta, ofertas.tipo_cta),
                     url_video_r2 = COALESCE(EXCLUDED.url_video_r2, ofertas.url_video_r2),
+                    url_imagem_criativo = COALESCE(EXCLUDED.url_imagem_criativo, ofertas.url_imagem_criativo),
                     score = GREATEST(
                         LEAST(ofertas.score + ofertas.fadiga_dias * %(pontos_fadiga)s, %(teto_score)s),
                         EXCLUDED.score
@@ -458,6 +489,7 @@ def _persistir_oferta(
                     "copy_texto": campos.get("copy_texto") or "",
                     "tipo_cta": campos.get("tipo_cta"),
                     "url_video_r2": url_video_r2,
+                    "url_imagem_criativo": campos.get("url_imagem_criativo"),
                     "score": score,
                     "phash_criativo": phash_criativo,
                     "phash_perceptual": phash_perceptual,
@@ -727,7 +759,19 @@ def revisar_concluidas():
                     lidos += 1
         except Exception:
             logger.exception("Falha ao ler o preço da oferta %s.", linha.get("id"))
-    return {"agrupadas": len(pendentes), "precos_consultados": lidos}
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            sem_fornecedor = listar_sem_fornecedor(cur, LOTE_REVISAO)
+        conn.commit()
+    consultados = 0
+    for linha in sem_fornecedor:
+        try:
+            with get_pool().connection() as conn:
+                if aplicar_fornecedor(conn, linha):
+                    consultados += 1
+        except Exception:
+            logger.exception("Falha ao consultar o fornecedor da oferta %s.", linha.get("id"))
+    return {"agrupadas": len(pendentes), "precos_consultados": lidos, "fornecedores_consultados": consultados}
 
 
 @app.task(name="tasks.qualification.drenar_pendentes")

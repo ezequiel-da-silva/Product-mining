@@ -17,6 +17,7 @@ from google.genai import types
 from psycopg.rows import dict_row
 from schemas import nicho_canonico
 from src.midia_r2 import url_leitura
+from src.provas_sociais import url_http_publica
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -52,7 +53,8 @@ COLUNAS_OFERTA = """
     id, nicho, sub_nicho, gancho_3s, gatilho_mental, url_destino, copy_texto,
     transcricao_video, url_video_r2, objecoes_quebradas, angulos_alternativos,
     preco_oferta_estimado, preco_moeda, score, margem_estimada_pct, data_ultima_captura,
-    dados_comerciais_ausentes
+    dados_comerciais_ausentes, cogs_estimado, cogs_moeda, fornecedor_url,
+    fornecedor_origem, provas_sociais
 """
 ROTULOS_OFERTAS = {
     "id": "Identificador",
@@ -309,6 +311,9 @@ def formatar_preco(valor: object, moeda: str) -> str | None:
     if moeda == "USD":
         quantizado = Decimal(str(valor)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         return f"US$ {quantizado:,.2f}"
+    if moeda == "CNY":
+        quantizado = Decimal(str(valor)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return f"CN¥ {quantizado:,.2f}"
     return None
 
 
@@ -336,6 +341,42 @@ def rotulo_nicho(oferta: dict) -> str:
     return nicho
 
 
+def texto_cogs(oferta: dict) -> str | None:
+    moeda = oferta.get("cogs_moeda")
+    if moeda not in {"USD", "CNY"} or oferta.get("cogs_estimado") is None:
+        return None
+    return formatar_preco(oferta.get("cogs_estimado"), moeda)
+
+
+def rotulo_cogs(oferta: dict) -> str:
+    origem = oferta.get("fornecedor_origem")
+    if origem == "1688":
+        return "COGS 1688"
+    if origem == "aliexpress":
+        return "COGS AliExpress"
+    return "COGS do fornecedor"
+
+
+def texto_provas(valor: object) -> str | None:
+    provas = _como_json(valor)
+    if not isinstance(provas, list):
+        return None
+    total = sum(1 for item in provas if isinstance(item, dict) and item.get("estrelas") == 5)
+    if total == 1:
+        return "1 depoimento 5 estrelas"
+    if total > 1:
+        return f"{total} depoimentos 5 estrelas"
+    return None
+
+
+def _cogs_na_moeda_da_venda(oferta: dict) -> bool:
+    return (
+        oferta.get("cogs_estimado") is not None
+        and isinstance(oferta.get("cogs_moeda"), str)
+        and oferta.get("cogs_moeda") == oferta.get("preco_moeda")
+    )
+
+
 def rotulo_margem(valor: object, moeda: str | None = None) -> str:
     if moeda != "BRL":
         return "Margem não comparável"
@@ -351,10 +392,17 @@ def rotulo_margem(valor: object, moeda: str | None = None) -> str:
     return f"Margem {faixa}: {numero}%"
 
 
-def _mostrar_margem(valor: object, moeda: str | None = None) -> None:
+def _mostrar_margem(valor: object, moeda: str | None = None, oferta: dict | None = None) -> None:
     st.caption(rotulo_margem(valor, moeda))
-    st.badge(ESTIMATIVA_SOURCING, color="gray", help=LEGENDA_MARGEM)
-    st.caption(LEGENDA_MARGEM)
+    if isinstance(oferta, dict) and _cogs_na_moeda_da_venda(oferta):
+        st.badge(rotulo_cogs(oferta), color="gray", help="Custo lido na busca reversa por imagem.")
+    else:
+        st.badge(ESTIMATIVA_SOURCING, color="gray", help=LEGENDA_MARGEM)
+        st.caption(LEGENDA_MARGEM)
+    if isinstance(oferta, dict):
+        cogs = texto_cogs(oferta)
+        if cogs:
+            st.caption(cogs)
 
 
 def texto_literal(valor: object) -> str:
@@ -498,6 +546,7 @@ def aplicar_grupo_na_oferta(oferta: dict, membros: list[dict]) -> None:
     """O cartão usa o preço em BRL de qualquer URL do grupo e lista os outros destinos."""
     proprios = [membro for membro in membros if isinstance(membro, dict)]
     oferta["criativos"] = len(proprios) if proprios else 1
+    _copiar_cogs(oferta, proprios)
     oferta["destinos_irmas"] = [
         membro["url_destino"]
         for membro in proprios
@@ -513,8 +562,23 @@ def aplicar_grupo_na_oferta(oferta: dict, membros: list[dict]) -> None:
             return
 
 
+def _copiar_cogs(oferta: dict, membros: list[dict]) -> None:
+    if oferta.get("cogs_estimado") is not None:
+        return
+    for membro in sorted(membros, key=lambda item: item.get("id") or 0):
+        if membro.get("cogs_moeda") in {"USD", "CNY"} and membro.get("cogs_estimado") is not None:
+            oferta["cogs_estimado"] = membro["cogs_estimado"]
+            oferta["cogs_moeda"] = membro["cogs_moeda"]
+            oferta["fornecedor_origem"] = membro.get("fornecedor_origem")
+            oferta["fornecedor_url"] = membro.get("fornecedor_url")
+            if oferta.get("provas_sociais") is None:
+                oferta["provas_sociais"] = membro.get("provas_sociais")
+            return
+
+
 SQL_MEMBROS_GRUPO = """
-SELECT id, oferta_canonica_id, url_destino, preco_oferta_estimado, preco_moeda
+SELECT id, oferta_canonica_id, url_destino, preco_oferta_estimado, preco_moeda,
+       cogs_estimado, cogs_moeda, fornecedor_origem, fornecedor_url, provas_sociais
 FROM ofertas
 WHERE status_qualificacao = 'concluido'
   AND (id = ANY(%s) OR oferta_canonica_id = ANY(%s))
@@ -560,12 +624,13 @@ def aviso_destino_inseguro(url: str) -> str | None:
     return f"O destino {host} trafega por HTTP, sem criptografia, e pertence a um domínio externo."
 
 
-def _link_loja(url: str) -> None:
+def _link_loja(url: str, rotulo: str = "Abrir loja") -> None:
     seguro = html.escape(url, quote=True)
     aviso = aviso_destino_inseguro(url)
-    titulo = html.escape(aviso, quote=True) if aviso else "Abrir a loja em uma nova aba"
+    titulo_padrao = "Abrir a loja em uma nova aba" if rotulo == "Abrir loja" else rotulo
+    titulo = html.escape(aviso, quote=True) if aviso else titulo_padrao
     st.markdown(
-        f'<a href="{seguro}" target="_blank" rel="noopener noreferrer" title="{titulo}">Abrir loja</a>',
+        f'<a href="{seguro}" target="_blank" rel="noopener noreferrer" title="{titulo}">{html.escape(rotulo)}</a>',
         unsafe_allow_html=True,
     )
     if aviso:
@@ -629,6 +694,39 @@ def _escrever_objecoes(valor: object) -> None:
     st.write("—")
 
 
+def _escrever_provas(valor: object) -> None:
+    provas = _como_json(valor)
+    if not isinstance(provas, list):
+        return
+    for prova in provas:
+        if not isinstance(prova, dict) or prova.get("estrelas") != 5:
+            continue
+        autor = prova.get("autor") if isinstance(prova.get("autor"), str) else ""
+        texto = prova.get("texto") if isinstance(prova.get("texto"), str) else ""
+        linha = f"{autor}: {texto}".strip(": ").strip()
+        if linha:
+            st.text(linha)
+        foto = prova.get("foto_url")
+        if isinstance(foto, str) and url_http_publica(foto):
+            st.image(foto.strip(), width=160)
+
+
+def _escrever_fornecedor(oferta: dict) -> None:
+    cogs = texto_cogs(oferta)
+    provas = texto_provas(oferta.get("provas_sociais"))
+    if not cogs and not provas and not oferta.get("fornecedor_url"):
+        return
+    with st.container(border=True):
+        st.markdown("**Fornecedor**")
+        st.text(rotulo_cogs(oferta) if cogs else "Fornecedor não identificado")
+        if cogs:
+            st.text(cogs)
+        _escrever_provas(oferta.get("provas_sociais"))
+        url = _url_http(oferta.get("fornecedor_url"))
+        if isinstance(url, str) and url_http_publica(url):
+            _link_loja(url, "Abrir fornecedor")
+
+
 def _escrever_angulos(valor: object) -> None:
     angulos = _como_json(valor)
     if not isinstance(angulos, list) or not angulos:
@@ -687,7 +785,7 @@ def _corpo_dialogo(oferta: dict) -> None:
     with margem:
         with st.container(border=True, height="stretch"):
             st.caption(ROTULOS_OFERTAS["margem_estimada_pct"])
-            _mostrar_margem(oferta.get("margem_estimada_pct"), oferta.get("preco_moeda"))
+            _mostrar_margem(oferta.get("margem_estimada_pct"), oferta.get("preco_moeda"), oferta)
     with preco:
         with st.container(border=True, height="stretch"):
             st.caption(ROTULOS_OFERTAS["preco_oferta_estimado"])
@@ -726,6 +824,8 @@ def _corpo_dialogo(oferta: dict) -> None:
         for destino in destinos:
             if isinstance(destino, str):
                 _link_loja(destino)
+
+    _escrever_fornecedor(oferta)
 
     url = _url_http(oferta.get("url_destino"))
     if url:
@@ -843,6 +943,12 @@ def _carregar_proxima_pagina(conn, filtro: str | None, ocultar_descartadas: bool
     st.session_state["ofertas_inicializadas"] = True
 
 
+def _legenda_provas(oferta: dict) -> None:
+    provas = texto_provas(oferta.get("provas_sociais"))
+    if provas:
+        st.caption(provas)
+
+
 def _legenda_triagem(estado: object) -> None:
     if estado == "estrelada":
         st.caption("Salva")
@@ -869,7 +975,8 @@ def _mostrar_cards(ofertas: list[dict], em_busca: bool, triagem: dict[int, str])
                         )
                     st.text(nicho)
                     st.caption(texto_comercial(oferta))
-                    _mostrar_margem(oferta.get("margem_estimada_pct"), oferta.get("preco_moeda"))
+                    _mostrar_margem(oferta.get("margem_estimada_pct"), oferta.get("preco_moeda"), oferta)
+                    _legenda_provas(oferta)
                     checkout = checkout_detectado(oferta.get("url_destino"))
                     if checkout:
                         st.caption(f"Checkout: {checkout}")

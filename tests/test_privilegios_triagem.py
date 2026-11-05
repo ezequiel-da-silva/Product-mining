@@ -106,6 +106,26 @@ def test_grupo_e_preco_da_pagina_entram_no_update_do_pipeline():
     assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE triagem_oferta TO pipeline_writer" in pipeline
 
 
+def test_cogs_e_provas_entram_no_update_do_pipeline():
+    migracao = (RAIZ / "infra/migrations/019_cogs_fornecedor_e_provas.sql").read_text(encoding="utf-8")
+    pipeline = (RAIZ / "infra/init-pipeline-role.sh").read_text(encoding="utf-8")
+    bloco = _bloco_update(pipeline)
+
+    for coluna in (
+        "url_imagem_criativo",
+        "cogs_estimado",
+        "cogs_moeda",
+        "fornecedor_url",
+        "fornecedor_origem",
+        "fornecedor_consultado_em",
+        "provas_sociais",
+    ):
+        assert coluna in migracao
+        assert coluna in bloco
+    assert "ofertas_cogs_par_check" in migracao
+    assert "idx_ofertas_sem_fornecedor" in migracao
+
+
 def test_security_md_publica_o_canal_de_reporte():
     texto = (RAIZ / "SECURITY.md").read_text(encoding="utf-8")
     assert "ezekisilva544@gmail.com" in texto

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS ofertas (
     phash_criativo VARCHAR(64),
     phash_perceptual BIT(64),
     url_video_r2 TEXT,
+    url_imagem_criativo TEXT,
 
     -- Camada de Inteligência Artificial Multimodal
     transcricao_video TEXT,
@@ -31,6 +32,12 @@ CREATE TABLE IF NOT EXISTS ofertas (
     preco_pagina_consultado_em TIMESTAMPTZ,
     oferta_canonica_id BIGINT REFERENCES ofertas (id) ON DELETE SET NULL,
     margem_estimada_pct SMALLINT,
+    cogs_estimado NUMERIC(10, 2),
+    cogs_moeda VARCHAR(3),
+    fornecedor_url TEXT,
+    fornecedor_origem VARCHAR(20),
+    fornecedor_consultado_em TIMESTAMPTZ,
+    provas_sociais JSONB,
     catalogo_mais_vendidos JSONB,
     objecoes_quebradas JSONB,       -- Lista estruturada de objeções resolvidas
     angulos_alternativos JSONB,     -- um ângulo, gerado quando a oferta está em teste
@@ -62,6 +69,14 @@ CREATE TABLE IF NOT EXISTS ofertas (
         CHECK (preco_oferta_estimado IS NULL OR preco_oferta_estimado >= 0),
     CONSTRAINT ofertas_preco_moeda_check
         CHECK (preco_moeda IS NULL OR preco_moeda IN ('BRL', 'USD')),
+    CONSTRAINT ofertas_cogs_estimado_check
+        CHECK (cogs_estimado IS NULL OR cogs_estimado >= 0),
+    CONSTRAINT ofertas_cogs_moeda_check
+        CHECK (cogs_moeda IS NULL OR cogs_moeda IN ('USD', 'CNY')),
+    CONSTRAINT ofertas_cogs_par_check
+        CHECK ((cogs_estimado IS NULL) = (cogs_moeda IS NULL)),
+    CONSTRAINT ofertas_fornecedor_origem_check
+        CHECK (fornecedor_origem IS NULL OR fornecedor_origem IN ('1688', 'aliexpress')),
     CONSTRAINT ofertas_canonica_diferente_check
         CHECK (oferta_canonica_id IS NULL OR oferta_canonica_id <> id),
     CONSTRAINT ofertas_fadiga_dias_check
@@ -86,6 +101,11 @@ CREATE INDEX IF NOT EXISTS idx_ofertas_nicho ON ofertas (nicho);
 CREATE INDEX IF NOT EXISTS idx_ofertas_concluidas_captura
     ON ofertas (data_ultima_captura DESC, id DESC)
     WHERE status_qualificacao = 'concluido';
+CREATE INDEX IF NOT EXISTS idx_ofertas_sem_fornecedor
+    ON ofertas (id)
+    WHERE status_qualificacao = 'concluido'
+      AND oferta_canonica_id IS NULL
+      AND fornecedor_consultado_em IS NULL;
 
 CREATE TABLE IF NOT EXISTS triagem_oferta (
     oferta_id BIGINT PRIMARY KEY REFERENCES ofertas (id) ON DELETE CASCADE,
@@ -318,5 +338,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('015_phash_perceptual'),
     ('016_fadiga_anuncio'),
     ('017_custo_modelo_e_vetor_mensal'),
-    ('018_preco_pagina_e_grupo')
+    ('018_preco_pagina_e_grupo'),
+    ('019_cogs_fornecedor_e_provas')
 ON CONFLICT (versao) DO NOTHING;

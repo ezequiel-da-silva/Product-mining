@@ -43,8 +43,10 @@ from src.dashboard import (
     _definir_triagem_lote,
     _descartar_credencial_na_url,
     _dialogo_oferta,
+    _legenda_provas,
     _link_loja,
     _mostrar_cards,
+    _mostrar_margem,
     _normalizar_frase_busca,
     _opcoes_filtro,
     _reiniciar_listagem,
@@ -63,10 +65,12 @@ from src.dashboard import (
     html_regiao_viva,
     listar_nichos_concluidos,
     rotulo_acessivel_detalhes,
+    rotulo_cogs,
     rotulo_margem,
     rotulo_nicho,
     similaridade_percentual,
     texto_bloqueio_cota,
+    texto_cogs,
     texto_comercial,
     texto_comparacao_p95,
     texto_criativos,
@@ -75,6 +79,7 @@ from src.dashboard import (
     texto_p95_usd,
     texto_preco,
     texto_precos_janela,
+    texto_provas,
     texto_regiao_viva,
 )
 
@@ -326,6 +331,9 @@ def test_consultas_trazem_gancho_link_e_detalhe():
             "objecoes_quebradas",
             "angulos_alternativos",
             "preco_moeda",
+            "cogs_estimado",
+            "cogs_moeda",
+            "provas_sociais",
         ):
             assert coluna in consulta
             assert coluna in COLUNAS_OFERTA
@@ -545,6 +553,48 @@ def test_grupo_mostra_preco_brl_da_irma_e_conta_criativos():
     assert oferta["destinos_irmas"] == ["https://loja.example/b"]
     assert texto_comercial(oferta) == "R$ 39,90"
     assert rotulo_margem(70, oferta["preco_moeda"]) == "Margem alta: 70%"
+
+
+def test_cogs_e_depoimento_aparecem_no_cartao():
+    oferta = {
+        "cogs_estimado": "8.50",
+        "cogs_moeda": "CNY",
+        "fornecedor_origem": "1688",
+        "preco_moeda": "BRL",
+        "provas_sociais": [{"estrelas": 5, "texto": "Chegou inteiro"}, {"estrelas": 4, "texto": "ruim"}],
+    }
+
+    assert texto_cogs(oferta) == "CN¥ 8.50"
+    assert rotulo_cogs(oferta) == "COGS 1688"
+    assert texto_provas(oferta["provas_sociais"]) == "1 depoimento 5 estrelas"
+    assert "_legenda_provas" in inspect.getsource(_mostrar_cards)
+    assert "texto_provas" in inspect.getsource(_legenda_provas)
+    assert "_escrever_fornecedor" in inspect.getsource(_corpo_dialogo)
+    assert "ESTIMATIVA_SOURCING" in inspect.getsource(_mostrar_margem)
+    irma = {
+        "id": 9,
+        "cogs_estimado": None,
+        "provas_sociais": None,
+        "preco_moeda": "BRL",
+        "preco_oferta_estimado": 10,
+    }
+    aplicar_grupo_na_oferta(
+        irma,
+        [
+            {"id": 9, "url_destino": "https://loja.example/b"},
+            {
+                "id": 1,
+                "url_destino": "https://loja.example/a",
+                "cogs_estimado": 8.5,
+                "cogs_moeda": "CNY",
+                "fornecedor_origem": "1688",
+                "provas_sociais": [{"estrelas": 5, "texto": "ok"}],
+            },
+        ],
+    )
+    assert irma["cogs_moeda"] == "CNY"
+    assert irma["provas_sociais"][0]["texto"] == "ok"
+    assert irma["preco_moeda"] == "BRL"
 
 
 def test_regiao_viva_anuncia_contagem_e_bloqueio_da_cota():

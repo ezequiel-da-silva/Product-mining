@@ -36,12 +36,17 @@ def test_revisao_nao_le_pagina_sem_candidata(monkeypatch):
     buscar = MagicMock()
     monkeypatch.setattr(worker, "aplicar_preco_lido", buscar)
 
-    assert worker.revisar_concluidas() == {"agrupadas": 0, "precos_consultados": 0}
+    assert worker.revisar_concluidas() == {
+        "agrupadas": 0,
+        "precos_consultados": 0,
+        "fornecedores_consultados": 0,
+    }
 
     buscar.assert_not_called()
     consultas = [chamada.args[0] for chamada in cursor.execute.call_args_list]
     assert any("preco_pagina_consultado_em IS NULL" in consulta for consulta in consultas)
     assert any("oferta_canonica_id IS NULL" in consulta for consulta in consultas)
+    assert any("fornecedor_consultado_em IS NULL" in consulta for consulta in consultas)
 
 
 def _pool_com_linhas(linhas):
@@ -171,6 +176,19 @@ def test_extrair_payload_mapeia_snapshot_e_video():
     assert campos["copy_texto"] == "Texto do anúncio"
     assert campos["tipo_cta"] == "SHOP_NOW"
     assert campos["video_url"] == "https://video.fbcdn.net/ad.mp4"
+    assert campos["url_imagem_criativo"] is None
+
+
+def test_extrair_payload_guarda_a_imagem_https_do_criativo():
+    payload = {
+        "snapshot": {
+            "link_url": "https://loja.example/produto",
+            "images": [{"original_image_url": "https://scontent.xx.fbcdn.net/foto.jpg"}],
+            "cards": [{"original_image_url": "http://inseguro.example/a.jpg"}],
+        }
+    }
+
+    assert _extrair_payload(payload)["url_imagem_criativo"] == "https://scontent.xx.fbcdn.net/foto.jpg"
 
 
 def test_calcular_score_ignora_a_idade_do_anuncio():
