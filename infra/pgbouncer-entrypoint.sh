@@ -10,12 +10,11 @@ umask 077
 db="${POSTGRES_DB:-mineracao_fb}"
 : "${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}"
 : "${LIFECYCLE_DB_PASSWORD:?LIFECYCLE_DB_PASSWORD is required}"
-pipeline=$(printf '%s' "$PIPELINE_DB_PASSWORD" | sed 's/"/""/g')
-lifecycle=$(printf '%s' "$LIFECYCLE_DB_PASSWORD" | sed 's/"/""/g')
-{
-  printf '"pipeline_writer" "%s"\n' "$pipeline"
-  printf '"lifecycle_writer" "%s"\n' "$lifecycle"
-} > "$diretorio/userlist.txt"
+# shellcheck disable=SC1091
+. /opt/pgbouncer-userlist.sh
+: > "$diretorio/userlist.txt"
+pgbouncer_gravar_papel "$diretorio/userlist.txt" pipeline_writer "$PIPELINE_DB_PASSWORD"
+pgbouncer_gravar_papel "$diretorio/userlist.txt" lifecycle_writer "$LIFECYCLE_DB_PASSWORD"
 
 cat > "$diretorio/pgbouncer.ini" <<EOF
 [databases]

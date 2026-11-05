@@ -75,6 +75,7 @@ services:
     entrypoint: ["/bin/sh", "/opt/pgbouncer-entrypoint.sh"]
     volumes:
       - ./infra/pgbouncer-entrypoint.sh:/opt/pgbouncer-entrypoint.sh:ro
+      - ./infra/pgbouncer-userlist.sh:/opt/pgbouncer-userlist.sh:ro
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-mineracao_fb}
       - PIPELINE_DB_PASSWORD=${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}

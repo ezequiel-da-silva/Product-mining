@@ -108,6 +108,97 @@ def test_o_beat_registra_o_envio_e_as_rotinas_novas(monkeypatch):
     assert worker_ia.avaliar_amostra() == {"status": "sem_juiz"}
 
 
+def test_userlist_troca_um_papel_e_preserva_o_outro(tmp_path):
+    import os
+    import subprocess
+
+    arquivo = tmp_path / "userlist.txt"
+    arquivo.write_text('"pipeline_writer" "antiga"\n"lifecycle_writer" "outra"\n', encoding="utf-8")
+    comando = """
+    . infra/pgbouncer-userlist.sh
+    pgbouncer_gravar_papel "$ARQUIVO" "$PAPEL" "$SENHA"
+    """
+    ambiente = os.environ.copy()
+    ambiente.update({"ARQUIVO": str(arquivo), "PAPEL": "pipeline_writer", "SENHA": 'seg"redo'})
+    subprocess.run(["sh", "-c", comando], check=True, cwd="/workspace", env=ambiente)
+    texto = arquivo.read_text(encoding="utf-8").splitlines()
+    assert texto == ['"lifecycle_writer" "outra"', '"pipeline_writer" "seg""redo"']
+
+
+def test_rotacao_regrava_o_userlist_do_pgbouncer():
+    from pathlib import Path
+
+    script = Path("infra/rotate-role-password.sh").read_text(encoding="utf-8")
+    assert "pgbouncer_gravar_papel /tmp/pgbouncer/userlist.txt" in script
+    assert "kill -HUP 1" in script
+    assert "streamlit_readonly" in script
+
+
+class _CurJuiz:
+    def execute(self, *_args, **_kwargs):
+        return None
+
+    def fetchall(self):
+        return [
+            {"id": 3, "oferta_id": 8, "nicho_extraido": "casa"},
+            {"id": 4, "oferta_id": 9, "nicho_extraido": "pet"},
+        ]
+
+    def fetchone(self):
+        return {"gancho_3s": "g", "transcricao_video": "f"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _ConnJuiz:
+    def cursor(self):
+        return _CurJuiz()
+
+    def commit(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _PoolJuiz:
+    def connection(self):
+        return _ConnJuiz()
+
+
+def test_juiz_429_interrompe_o_lote_sem_parecer(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "teste")
+    monkeypatch.setenv("MODELO_JUIZ", "endpoint-juiz")
+    import src.worker_ia as worker
+
+    chamadas = {"parecer": 0, "registro": 0}
+    descartados: list[int] = []
+
+    def estoura(*_args, **_kwargs):
+        chamadas["parecer"] += 1
+        raise worker.ClientError(429, {"error": {"message": "quota"}})
+
+    def registra(*_args, **_kwargs):
+        chamadas["registro"] += 1
+
+    monkeypatch.setattr(worker, "get_pool", lambda: _PoolJuiz())
+    monkeypatch.setattr(worker, "_modelo_juiz", lambda: "endpoint-juiz")
+    monkeypatch.setattr(worker, "_parecer_juiz", estoura)
+    monkeypatch.setattr(worker, "_registrar_parecer", registra)
+    monkeypatch.setattr(worker, "_descartar_amostras", lambda ids: descartados.extend(ids))
+
+    assert worker.avaliar_amostra() == {"status": "cota", "julgadas": 0}
+    assert chamadas == {"parecer": 1, "registro": 0}
+    assert descartados == [3, 4]
+
+
 def test_pool_nao_prepara_statement_no_pgbouncer(monkeypatch):
     chamadas = []
 
