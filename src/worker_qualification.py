@@ -1,5 +1,6 @@
 import hashlib
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -34,6 +35,7 @@ from src.comercial import aplicar_preco_lido, listar_precos_ausentes, qualificar
 from src.fornecedor import aplicar_fornecedor, listar_sem_fornecedor  # noqa: E402
 from src.midia_r2 import referencia_armazenada  # noqa: E402
 from src.phash_visual import LIMIAR_HAMMING, CapturaQuadro  # noqa: E402
+from src.visao import ColetorVisao, narracao_parecida  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 logger = logging.getLogger(__name__)
@@ -52,7 +54,7 @@ def get_pool() -> ConnectionPool:
             conninfo=conninfo,
             min_size=1,
             max_size=2,
-            kwargs={"row_factory": dict_row},
+            kwargs={"row_factory": dict_row, "prepare_threshold": None},
             open=True,
         )
     return pool_db
@@ -295,7 +297,13 @@ def _abrir_stream_video(video_url: str):
     raise ValueError("O vídeo excedeu o limite de redirecionamentos permitidos.")
 
 
-def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> tuple[str, str | None]:
+def _enviar_stream_multipart(
+    client,
+    bucket: str,
+    object_key: str,
+    response,
+    coletor: ColetorVisao | None = None,
+) -> tuple[str, str | None]:
     content_length = response.headers.get("Content-Length")
     if content_length and int(content_length) > MAX_VIDEO_BYTES:
         raise ValueError("Vídeo excede o limite de 250 MB.")
@@ -303,6 +311,8 @@ def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> 
     response.raw.decode_content = True
     digest = hashlib.sha256()
     captura = CapturaQuadro()
+    if coletor is None:
+        coletor = ColetorVisao()
     multipart = client.create_multipart_upload(Bucket=bucket, Key=object_key, ContentType="video/mp4")
     upload_id = multipart["UploadId"]
     parts = []
@@ -315,6 +325,7 @@ def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> 
                 continue
             digest.update(chunk)
             captura.escrever(chunk)
+            coletor.escrever(chunk)
             bytes_uploaded += len(chunk)
             if bytes_uploaded > MAX_VIDEO_BYTES:
                 raise ValueError("Vídeo excede o limite de 250 MB.")
@@ -343,6 +354,7 @@ def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> 
                 Body=bytes(buffered),
                 ContentType="video/mp4",
             )
+            coletor.fechar()
             return digest.hexdigest(), captura.fechar()
 
         if buffered:
@@ -361,6 +373,7 @@ def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> 
             UploadId=upload_id,
             MultipartUpload={"Parts": parts},
         )
+        coletor.fechar()
         return digest.hexdigest(), captura.fechar()
     except Exception:
         try:
@@ -370,9 +383,14 @@ def _enviar_stream_multipart(client, bucket: str, object_key: str, response) -> 
         raise
     finally:
         captura.encerrar()
+        coletor.encerrar()
 
 
-def _upload_video_r2(video_url: str | None, ad_id: object) -> tuple[str | None, str | None, str | None]:
+def _upload_video_r2(
+    video_url: str | None,
+    ad_id: object,
+    extras: dict | None = None,
+) -> tuple[str | None, str | None, str | None]:
     if not video_url:
         return None, None, None
     if not ad_id:
@@ -395,8 +413,11 @@ def _upload_video_r2(video_url: str | None, ad_id: object) -> tuple[str | None, 
         if existing_url:
             return existing_url, None, None
 
+        coletor = ColetorVisao()
         with _abrir_stream_video(video_url) as response:
-            digest, visual = _enviar_stream_multipart(client, bucket, object_key, response)
+            digest, visual = _enviar_stream_multipart(client, bucket, object_key, response, coletor)
+        if extras is not None:
+            extras["visao"] = coletor.resultado
 
         return _url_r2(client, bucket, object_key), digest, visual
     except (BotoCoreError, ClientError, requests.RequestException, ValueError, KeyError) as error:
@@ -620,6 +641,75 @@ def _copiar_enriquecimento(
     return True
 
 
+def _copy_com_legenda(copy: str, leitura: object) -> str:
+    legenda = getattr(leitura, "legenda", "") or ""
+    if not legenda:
+        return copy
+    return f"{copy}\nLegenda queimada no primeiro quadro: {legenda}".strip()
+
+
+def _gravar_visao(oferta_id: int, leitura: object) -> None:
+    legenda = getattr(leitura, "legenda", "") or ""
+    ritmo = getattr(leitura, "cortes_por_segundo", None)
+    fingerprint = getattr(leitura, "fingerprint", None)
+    if not legenda and ritmo is None and not fingerprint:
+        return
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE ofertas
+                SET legenda_queimada = COALESCE(%(legenda)s, legenda_queimada),
+                    cortes_por_segundo = COALESCE(%(ritmo)s, cortes_por_segundo),
+                    fingerprint_audio = COALESCE(%(audio)s::jsonb, fingerprint_audio)
+                WHERE id = %(id)s
+                """,
+                {
+                    "id": oferta_id,
+                    "legenda": legenda or None,
+                    "ritmo": ritmo,
+                    "audio": json.dumps(fingerprint) if fingerprint else None,
+                },
+            )
+        conn.commit()
+
+
+def _narracao_repetida(oferta_id: int, fingerprint: list[int]) -> bool:
+    if len(fingerprint) < 20:
+        return False
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT fingerprint_audio
+                FROM ofertas
+                WHERE id <> %(id)s
+                  AND fingerprint_audio IS NOT NULL
+                  AND status_qualificacao IN ('concluido', 'processando_ia')
+                ORDER BY id DESC
+                LIMIT 50
+                """,
+                {"id": oferta_id},
+            )
+            linhas = cur.fetchall()
+        conn.commit()
+    if not isinstance(linhas, list):
+        return False
+    for linha in linhas:
+        bruto = linha.get("fingerprint_audio") if isinstance(linha, dict) else None
+        if isinstance(bruto, str):
+            try:
+                bruto = json.loads(bruto)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(bruto, list) and narracao_parecida(
+            fingerprint,
+            [item for item in bruto if isinstance(item, int) and not isinstance(item, bool)],
+        ):
+            return True
+    return False
+
+
 @app.task(bind=True, name="tasks.qualification.avaliar_oferta", max_retries=3)
 def avaliar_oferta(self, payload: dict):
     if not isinstance(payload, dict):
@@ -645,11 +735,17 @@ def avaliar_oferta(self, payload: dict):
 
     try:
         score = _calcular_score(campos)
-        video_r2_url, digest, visual_upload = _upload_video_r2(campos.get("video_url"), campos.get("ad_id"))
+        extras: dict = {}
+        video_r2_url, digest, visual_upload = _upload_video_r2(
+            campos.get("video_url"),
+            campos.get("ad_id"),
+            extras,
+        )
         oferta = _persistir_oferta(campos, score, video_r2_url, digest, visual_upload)
         if not oferta:
             logger.error("Upsert não retornou uma oferta para URL %s.", campos["url_destino"])
             raise RuntimeError("O upsert da oferta não retornou o registro persistido.")
+        _gravar_visao(oferta["id"], extras.get("visao"))
 
         phash = digest or oferta.get("phash_criativo")
         visual = visual_upload or oferta.get("phash_perceptual")
@@ -668,6 +764,15 @@ def avaliar_oferta(self, payload: dict):
             and ((oferta.get("vezes_avistado") or 0) >= MIN_AVISTAMENTOS_IA or score >= SCORE_DESPACHO_IMEDIATO)
             and _pode_despachar_ia(oferta)
         ):
+            leitura = extras.get("visao")
+            fingerprint = getattr(leitura, "fingerprint", None)
+            if fingerprint and _narracao_repetida(oferta["id"], fingerprint):
+                return {
+                    "status": "duplicate_creative",
+                    "oferta_id": oferta["id"],
+                    "score": oferta["score"],
+                    "enriquecida": False,
+                }
             if _url_video_ja_analisada(video_r2_url, oferta["id"]):
                 return {
                     "status": "duplicate_video_url",
@@ -680,7 +785,7 @@ def avaliar_oferta(self, payload: dict):
                 args=[
                     oferta["id"],
                     video_r2_url,
-                    campos.get("copy_texto") or "",
+                    _copy_com_legenda(campos.get("copy_texto") or "", extras.get("visao")),
                 ],
                 queue="ai_multimodal_queue",
             )
@@ -819,3 +924,23 @@ def drenar_pendentes():
     }
     logger.info("Drenagem de pendentes concluída: %s.", resultado)
     return resultado
+
+
+@app.task(name="tasks.qualification.revisar_fornecedores")
+def revisar_fornecedores() -> dict:
+    """Relê o COGS de canônicas com mais de 7 dias. 404 vira indisponivel; alta acima de 15% vira reajuste."""
+    from src.fornecedor import listar_revisao_fornecedor, revisar_fornecedor
+
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            lote = listar_revisao_fornecedor(cur, 20)
+        conn.commit()
+    lidos = 0
+    for linha in lote:
+        try:
+            with get_pool().connection() as conn:
+                revisar_fornecedor(conn, linha)
+            lidos += 1
+        except Exception:
+            logger.exception("Falha ao revisar o fornecedor da oferta %s.", linha.get("id"))
+    return {"lidos": lidos, "fila": len(lote)}

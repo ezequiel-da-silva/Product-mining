@@ -33,7 +33,35 @@ public static class CdpBridge {
         }
     }
 
+    static bool NaRede(IPAddress ip, byte[] rede, int prefixo) {
+        if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
+        var bytes = ip.GetAddressBytes();
+        int inteiros = prefixo / 8;
+        int resto = prefixo % 8;
+        for (int i = 0; i < inteiros; i++) {
+            if (bytes[i] != rede[i]) return false;
+        }
+        if (resto == 0) return true;
+        int mascara = (byte)(0xFF << (8 - resto));
+        return (bytes[inteiros] & mascara) == (rede[inteiros] & mascara);
+    }
+
+    static bool OrigemPermitida(TcpClient client) {
+        var remoto = ((IPEndPoint)client.Client.RemoteEndPoint).Address;
+        if (IPAddress.IsLoopback(remoto)) return true;
+        // WSL2/Hyper-V usa 10/8 além de 172.16/12 e 192.168/16.
+        if (NaRede(remoto, new byte[] { 10, 0, 0, 0 }, 8)) return true;
+        if (NaRede(remoto, new byte[] { 172, 16, 0, 0 }, 12)) return true;
+        if (NaRede(remoto, new byte[] { 192, 168, 0, 0 }, 16)) return true;
+        return false;
+    }
+
     static void Handle(TcpClient client, int port) {
+        if (!OrigemPermitida(client)) {
+            Console.WriteLine("CDP bridge recusou origem fora das redes privadas.");
+            try { client.Close(); } catch { }
+            return;
+        }
         TcpClient upstream = null;
         try {
             upstream = new TcpClient();

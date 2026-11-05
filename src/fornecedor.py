@@ -2,10 +2,11 @@
 
 import json
 import logging
+from decimal import Decimal
 from urllib.parse import urlsplit
 
 from src.cambio import completar_brl
-from src.landing import buscar_html, host_publico
+from src.landing import buscar_html, codigo_http, host_publico
 from src.provas_r2 import arquivar_fotos
 from src.provas_sociais import extrair_provas, url_http_publica
 from src.sourcing import (
@@ -187,3 +188,108 @@ def aplicar_fornecedor(conn, linha: dict) -> bool:
     elif gravou:
         logger.info("Oferta %s ficou sem fornecedor identificado.", linha.get("id"))
     return gravou
+
+
+SQL_REVISAO_FORNECEDOR = """
+SELECT id, fornecedor_url, cogs_estimado, cogs_moeda, preco_oferta_estimado, preco_moeda
+FROM ofertas
+WHERE oferta_canonica_id IS NULL
+  AND fornecedor_url IS NOT NULL
+  AND fornecedor_consultado_em IS NOT NULL
+  AND (
+    fornecedor_revisado_em IS NULL
+    OR fornecedor_revisado_em < CURRENT_TIMESTAMP - INTERVAL '7 days'
+  )
+ORDER BY fornecedor_revisado_em NULLS FIRST, id
+LIMIT %(limite)s
+"""
+
+SQL_CARIMBO_FORNECEDOR = """
+UPDATE ofertas
+SET fornecedor_revisado_em = CURRENT_TIMESTAMP,
+    fornecedor_status = %(status)s
+WHERE id = %(id)s
+"""
+
+SQL_REAJUSTE_FORNECEDOR = """
+UPDATE ofertas
+SET cogs_estimado = %(cogs)s,
+    fornecedor_status = 'reajuste',
+    fornecedor_revisado_em = CURRENT_TIMESTAMP
+WHERE id = %(id)s
+  AND cogs_moeda = %(moeda)s
+"""
+
+
+def classificar_reajuste(anterior: Decimal, novo: Decimal) -> str:
+    if anterior <= 0:
+        return "ok"
+    if (novo - anterior) / anterior > Decimal("0.15"):
+        return "reajuste"
+    return "ok"
+
+
+def listar_revisao_fornecedor(cur, limite: int) -> list[dict]:
+    cur.execute(SQL_REVISAO_FORNECEDOR, {"limite": limite})
+    return _linhas(cur)
+
+
+def _preco_atual(url: str, html: str) -> Candidato | None:
+    origem = origem_da_url(url)
+    for candidato in extrair_fornecedores(html):
+        if origem is None or candidato.origem == origem:
+            return candidato
+    return None
+
+
+def _decimal(valor: object) -> Decimal | None:
+    if isinstance(valor, bool) or valor is None:
+        return None
+    try:
+        numero = Decimal(str(valor))
+    except (ArithmeticError, ValueError):
+        return None
+    if not numero.is_finite():
+        return None
+    return numero
+
+
+def revisar_fornecedor(conn, linha: dict) -> str:
+    oferta_id = int(linha["id"])
+    url = linha.get("fornecedor_url")
+    if not isinstance(url, str) or not url.strip():
+        return "sem_url"
+    codigo = codigo_http(url.strip())
+    with conn.cursor() as cur:
+        if codigo in {404, 410}:
+            cur.execute(SQL_CARIMBO_FORNECEDOR, {"id": oferta_id, "status": "indisponivel"})
+            conn.commit()
+            return "indisponivel"
+        html = buscar_html(url.strip())
+        if not isinstance(html, str):
+            return "falha_leitura"
+        candidato = _preco_atual(url.strip(), html)
+        anterior = _decimal(linha.get("cogs_estimado"))
+        if candidato is None or anterior is None or candidato.moeda != linha.get("cogs_moeda"):
+            cur.execute(SQL_CARIMBO_FORNECEDOR, {"id": oferta_id, "status": "ok"})
+            conn.commit()
+            return "sem_preco"
+        estado = classificar_reajuste(anterior, candidato.preco)
+        if estado != "reajuste":
+            cur.execute(SQL_CARIMBO_FORNECEDOR, {"id": oferta_id, "status": "ok"})
+            conn.commit()
+            return "ok"
+        cur.execute(
+            SQL_REAJUSTE_FORNECEDOR,
+            {"id": oferta_id, "cogs": candidato.preco, "moeda": candidato.moeda},
+        )
+        completar_brl(
+            cur,
+            oferta_id,
+            linha.get("preco_oferta_estimado"),
+            linha.get("preco_moeda"),
+            candidato.preco,
+            candidato.moeda,
+        )
+    conn.commit()
+    return "reajuste"

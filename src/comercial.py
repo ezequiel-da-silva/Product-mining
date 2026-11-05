@@ -23,6 +23,7 @@ WHERE id = %(id)s
 SQL_FECHAR_BLOQUEADO = """
 UPDATE ofertas
 SET preco_origem = 'bloqueado',
+    proxima_consulta_em = CURRENT_TIMESTAMP + INTERVAL '15 minutes',
     dados_comerciais_ausentes = TRUE,
     status_qualificacao = 'concluido',
     processamento_iniciado_em = NULL,
@@ -52,7 +53,8 @@ WHERE id = %(id)s
 
 SQL_CONSULTA_BLOQUEADA = """
 UPDATE ofertas
-SET preco_origem = 'bloqueado'
+SET preco_origem = 'bloqueado',
+    proxima_consulta_em = CURRENT_TIMESTAMP + INTERVAL '15 minutes'
 WHERE id = %(id)s
   AND status_qualificacao = 'concluido'
 """
@@ -62,6 +64,7 @@ SELECT id, url_destino
 FROM ofertas
 WHERE status_qualificacao = 'concluido'
   AND preco_moeda IS NULL
+  AND (proxima_consulta_em IS NULL OR proxima_consulta_em <= CURRENT_TIMESTAMP)
   AND (
     preco_pagina_consultado_em IS NULL
     OR preco_origem = 'bloqueado'

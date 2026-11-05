@@ -79,6 +79,7 @@ def test_socket_abre_no_ip_validado_mesmo_se_o_dns_mudar(monkeypatch):
         destinos.append(address[0])
         raise OSError("sem rede")
 
+    monkeypatch.setattr("src.landing._modulo_curl", lambda: None)
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(conexao_urllib, "create_connection", criar)
 
@@ -107,6 +108,7 @@ def test_sni_permanece_o_nome_original(monkeypatch):
         vistos["nome"] = kwargs["assert_hostname"]
         raise requests.ConnectionError("sem tls")
 
+    monkeypatch.setattr("src.landing._modulo_curl", lambda: None)
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(conexao_urllib, "create_connection", criar)
     monkeypatch.setattr(conexao_https, "_ssl_wrap_socket_and_match_hostname", embrulho)
@@ -125,7 +127,7 @@ def test_redirect_repete_a_checagem_e_nao_abre_host_privado(monkeypatch):
 
     aberturas: list[tuple[str, str]] = []
 
-    def abrir(url, hostname, ip):
+    def abrir(url, hostname, ip, _tentativa=0):
         aberturas.append((url, hostname, ip))
         resposta = MagicMock()
         resposta.is_redirect = True

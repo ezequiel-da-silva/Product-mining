@@ -90,7 +90,7 @@ def get_pool() -> ConnectionPool:
             conninfo=conninfo,
             min_size=1,
             max_size=2,
-            kwargs={"row_factory": dict_row},
+            kwargs={"row_factory": dict_row, "prepare_threshold": None},
             open=True,
         )
     return pool_db

@@ -38,6 +38,12 @@ CREATE TABLE IF NOT EXISTS ofertas (
     fornecedor_origem VARCHAR(20),
     fornecedor_consultado_em TIMESTAMPTZ,
     provas_sociais JSONB,
+    legenda_queimada TEXT,
+    cortes_por_segundo NUMERIC(6,3),
+    fingerprint_audio JSONB,
+    proxima_consulta_em TIMESTAMPTZ,
+    fornecedor_revisado_em TIMESTAMPTZ,
+    fornecedor_status VARCHAR(20) DEFAULT 'ok',
     catalogo_mais_vendidos JSONB,
     objecoes_quebradas JSONB,       -- Lista estruturada de objeções resolvidas
     angulos_alternativos JSONB,     -- um ângulo, gerado quando a oferta está em teste
@@ -432,14 +438,27 @@ CREATE TABLE IF NOT EXISTS paridade_cambio (
 CREATE TABLE IF NOT EXISTS integracao_evento (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     criado_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    atualizado_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    disponivel_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     estado VARCHAR(20) NOT NULL DEFAULT 'pendente',
     corpo JSONB NOT NULL,
     tentativas SMALLINT NOT NULL DEFAULT 0,
     enviado_em TIMESTAMPTZ,
     CONSTRAINT integracao_evento_estado_check
-        CHECK (estado IN ('pendente', 'enviado', 'esgotada')),
+        CHECK (estado IN ('pendente', 'em_envio', 'enviado', 'esgotada')),
     CONSTRAINT integracao_evento_tentativas_check
         CHECK (tentativas >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS avaliacao_amostral (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    oferta_id BIGINT NOT NULL REFERENCES ofertas (id) ON DELETE CASCADE,
+    nicho_extraido VARCHAR(100) NOT NULL,
+    nicho_juiz VARCHAR(100),
+    concorda BOOLEAN,
+    motivo TEXT,
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT avaliacao_amostral_unica UNIQUE (oferta_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_integracao_evento_pendente
@@ -537,6 +556,15 @@ $$;
 
 REVOKE ALL ON FUNCTION manter_particoes_oferta_vetor() FROM PUBLIC;
 
+DO $$
+BEGIN
+    ALTER TABLE ofertas
+        ADD CONSTRAINT ofertas_fornecedor_status_check
+        CHECK (fornecedor_status IN ('ok', 'reajuste', 'indisponivel'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     versao TEXT PRIMARY KEY,
     aplicada_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -566,5 +594,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('021_preco_origem'),
     ('022_paridade_cambio'),
     ('023_integracao_evento'),
-    ('024_particoes_oferta_vetor')
+    ('024_particoes_oferta_vetor'),
+    ('025_escala_visao_e_eventos')
 ON CONFLICT (versao) DO NOTHING;
