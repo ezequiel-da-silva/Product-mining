@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.8.0...v0.8.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* recarrega o userlist na rotação e corta o juiz em 429 ([#14](https://github.com/ezequiel-da-silva/Product-mining/issues/14)) ([d56a35e](https://github.com/ezequiel-da-silva/Product-mining/commit/d56a35e900f4443936e1204a1c2a2263fbcd0a1c))
+
 ## [0.8.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.7.0...v0.8.0) (2026-11-05)
 
 
