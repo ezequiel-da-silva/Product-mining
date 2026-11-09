@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS ofertas (
     proxima_consulta_em TIMESTAMPTZ,
     fornecedor_revisado_em TIMESTAMPTZ,
     fornecedor_status VARCHAR(20) DEFAULT 'ok',
+    frete_estimado_brl NUMERIC(12, 2),
+    imposto_estimado_brl NUMERIC(12, 2),
+    margem_liquida_brl NUMERIC(12, 2),
+    tem_order_bump BOOLEAN NOT NULL DEFAULT FALSE,
+    preco_bump NUMERIC(10, 2),
     catalogo_mais_vendidos JSONB,
     objecoes_quebradas JSONB,       -- Lista estruturada de objeções resolvidas
     angulos_alternativos JSONB,     -- um ângulo, gerado quando a oferta está em teste
@@ -74,7 +79,7 @@ CREATE TABLE IF NOT EXISTS ofertas (
     paridade_vigencia DATE,
     paridade_fonte VARCHAR(20),
     CONSTRAINT ofertas_status_qualificacao_check
-        CHECK (status_qualificacao IN ('pendente', 'pendente_lp', 'processando_ia', 'concluido')),
+        CHECK (status_qualificacao IN ('pendente', 'pendente_lp', 'processando_ia', 'concluido', 'descartado_local')),
     CONSTRAINT ofertas_score_check
         CHECK (score BETWEEN 0 AND 100),
     CONSTRAINT ofertas_margem_estimada_pct_check
@@ -140,7 +145,7 @@ DO $$
 BEGIN
     ALTER TABLE ofertas
         ADD CONSTRAINT ofertas_status_qualificacao_check
-        CHECK (status_qualificacao IN ('pendente', 'pendente_lp', 'processando_ia', 'concluido'));
+        CHECK (status_qualificacao IN ('pendente', 'pendente_lp', 'processando_ia', 'concluido', 'descartado_local'));
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
@@ -461,6 +466,43 @@ CREATE TABLE IF NOT EXISTS avaliacao_amostral (
     CONSTRAINT avaliacao_amostral_unica UNIQUE (oferta_id)
 );
 
+CREATE TABLE IF NOT EXISTS parametro_viabilidade (
+    nome VARCHAR(40) PRIMARY KEY,
+    valor NUMERIC(12, 6) NOT NULL,
+    vigente_em DATE NOT NULL DEFAULT CURRENT_DATE
+);
+
+INSERT INTO parametro_viabilidade (nome, valor) VALUES
+    ('ii', 0.20),
+    ('icms', 0.17),
+    ('gateway_percentual', 0.0499),
+    ('gateway_fixo_brl', 1.00),
+    ('chargeback', 0.01)
+ON CONFLICT (nome) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS faixa_frete_nicho (
+    nicho VARCHAR(100) PRIMARY KEY,
+    peso_gramas INTEGER NOT NULL CHECK (peso_gramas > 0),
+    frete_brl NUMERIC(10, 2) NOT NULL CHECK (frete_brl >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS loja_pixel (
+    pixel_id VARCHAR(20) NOT NULL,
+    dominio TEXT NOT NULL,
+    visto_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (pixel_id, dominio)
+);
+
+CREATE TABLE IF NOT EXISTS variacao_copy (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    oferta_id BIGINT NOT NULL REFERENCES ofertas (id) ON DELETE CASCADE,
+    peca VARCHAR(20) NOT NULL,
+    texto TEXT NOT NULL,
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT variacao_copy_peca_check CHECK (peca IN ('headline', 'ugc', 'stories')),
+    CONSTRAINT variacao_copy_unica UNIQUE (oferta_id, peca)
+);
+
 CREATE INDEX IF NOT EXISTS idx_integracao_evento_pendente
     ON integracao_evento (id)
     WHERE estado = 'pendente';
@@ -595,5 +637,6 @@ INSERT INTO schema_migrations (versao) VALUES
     ('022_paridade_cambio'),
     ('023_integracao_evento'),
     ('024_particoes_oferta_vetor'),
-    ('025_escala_visao_e_eventos')
+    ('025_escala_visao_e_eventos'),
+    ('026_viabilidade_funil')
 ON CONFLICT (versao) DO NOTHING;

@@ -15,6 +15,11 @@ O sistema recolhe anúncios da Biblioteca do Facebook, qualifica a oferta, lê o
 7. Quando a canônica está em teste e ainda não tem ângulo, o beat gera um único ângulo A/B.
 8. Às 03:00 o lifecycle remove ofertas fracas e apaga do R2 o vídeo que nenhuma outra oferta referencia.
 9. O painel Streamlit lê com `streamlit_readonly` e grava só `triagem_oferta`.
+10. A margem líquida usa frete do nicho e alíquotas da tabela `parametro_viabilidade`. Sem faixa de frete, a margem fica vazia e o rascunho Shopify não nasce.
+11. O pixel e o order bump saem do HTML já baixado. O índice de lojas conta avistamentos, não faturamento.
+12. Se `MODELO_TRIAGEM_PATH` aponta para um arquivo, a triagem local descarta texto genérico ou fora do catálogo com confiança de pelo menos 0,90. Sem o arquivo, o fluxo segue para o Gemini.
+13. A canônica estrelada ganha headline, gancho de UGC e texto de stories em `variacao_copy`. Nada disso vai ao gerenciador de anúncios.
+14. Bloqueios de egress acima de 30% em cinco minutos pausam a abertura de página por 15 minutos. O processo em `src/metricas.py` publica filas, PgBouncer e a razão de bloqueio em `:9108`. O backup contínuo com WAL-G fica numa imagem filha e não liga no Postgres padrão.
 
 ## Componentes
 
@@ -37,11 +42,11 @@ O sistema recolhe anúncios da Biblioteca do Facebook, qualifica a oferta, lê o
 
 ## Moeda e margem
 
-O preço falado e o preço da página usam BRL ou USD. O COGS do 1688 é CNY e o do AliExpress é USD. A margem estimada do modelo só é substituída pelo cálculo `(venda - COGS) / venda` quando as duas moedas coincidem. Venda em BRL com custo em CNY permanece estimativa e o painel mostra os dois números. Imposto, taxa de gateway e frete não entram nesse cálculo.
+O preço falado e o preço da página usam BRL ou USD. O COGS do 1688 é CNY e o do AliExpress é USD. A margem estimada do modelo só é substituída pelo cálculo `(venda - COGS) / venda` quando as duas moedas coincidem. Venda em BRL com custo em CNY permanece estimativa e o painel mostra os dois números. Imposto, gateway e frete entram em `margem_liquida_brl`.
 
-## Estado na 0.8.1
+## Estado
 
-As migrações aplicadas vão de `001` a `025`. Não há migração `026`.
+As migrações vão de `001` a `026`. O mapa do que entrou e do que continua de fora está em `docs/FRONTEIRAS.md`.
 
 - O producer usa uma única aba CDP em `host.docker.internal`, na Biblioteca de Anúncios ou em `CDP_TARGET_URL`. O aquecimento do navegador continua manual.
 - A página de destino sai por `curl_cffi` com `impersonate` de Chrome quando `EGRESS_PROXIES` está definido. O resolve é `HOST:PORT:IP`. Sem proxy, o socket continua no IP já validado.
@@ -50,5 +55,3 @@ As migrações aplicadas vão de `001` a `025`. Não há migração `026`.
 - O rascunho de loja é só Shopify, em `rascunho_shopify`. WooCommerce é marcador de host, junto com Yampi e Cartpanda.
 - O cache de embedding é por hash de texto. Não há context cache do Gemini. A extração usa `thinking_budget` 0.
 - O juiz de 2% só chama a API quando `MODELO_JUIZ` é outro modelo. HTTP 429 interrompe o lote e não devolve a tarefa à fila.
-
-O desenho das fronteiras seguintes, e o que o código se recusa a automatizar, está em `docs/FRONTEIRAS.md`.

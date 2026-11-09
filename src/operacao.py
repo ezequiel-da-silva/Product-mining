@@ -101,7 +101,8 @@ def alertar_dlq_ia() -> dict:
         logger.info("DLQ de IA: %s pendentes na tabela; LLEN ai_dead_letter=%s.", total, fila)
     if total > LIMIAR_ALERTA:
         _postar_alerta(total)
-    return {"pendentes": total, "fila": fila}
+    sessao = _alertar_sessao()
+    return {"pendentes": total, "fila": fila, "sessao": sessao}
 
 
 @app.task(name="tasks.lifecycle.coletar_paridade_cambio")
@@ -115,8 +116,11 @@ def coletar_paridade_cambio() -> dict:
         with conn.cursor() as cur:
             gravar_paridades(cur, vigencia, linhas)
             atualizadas = _preencher_brl_pendente(cur)
+            from src.viabilidade import preencher_viabilidade_pendente
+
+            viabilidade = preencher_viabilidade_pendente(cur)
         conn.commit()
-    return {"vigencia": vigencia.isoformat(), "linhas": len(linhas), "ofertas": atualizadas}
+    return {"vigencia": vigencia.isoformat(), "linhas": len(linhas), "ofertas": atualizadas, "viabilidade": viabilidade}
 
 
 def _loja_configurada() -> bool:
@@ -151,7 +155,8 @@ def _oferta_do_evento(cur, corpo: dict) -> dict:
         return corpo
     cur.execute(
         """
-        SELECT id, nicho, copy_texto, venda_brl, cogs_brl, url_destino, fornecedor_url, provas_sociais
+        SELECT id, nicho, copy_texto, venda_brl, cogs_brl, margem_liquida_brl,
+               url_destino, fornecedor_url, provas_sociais
         FROM ofertas
         WHERE id = %(id)s
         """,
@@ -248,6 +253,31 @@ def _llen_dead_letter() -> int | None:
     except Exception:
         logger.info("LLEN da ai_dead_letter indisponível.")
         return None
+
+
+def _alertar_sessao() -> str | None:
+    from src.egress_pausa import pausa_ativa
+    from src.sessao import estado_atual
+
+    estado = estado_atual()
+    if estado in {None, "ok"} and not pausa_ativa():
+        return estado
+    if estado not in {None, "ok"}:
+        _postar_alerta_texto(f"Sessão da Biblioteca: {estado}. A publicação está pausada.")
+    if pausa_ativa():
+        _postar_alerta_texto("Egress pausado: bloqueios acima de 30% em 5 minutos.")
+    return estado
+
+
+def _postar_alerta_texto(texto: str) -> None:
+    url = ler_segredo("ALERTA_WEBHOOK_URL").strip()
+    if not url:
+        logger.error(texto)
+        return
+    try:
+        requests.post(url, json={"text": texto}, timeout=(3, 5), allow_redirects=False)
+    except requests.RequestException:
+        logger.exception("Falha ao postar o alerta.")
 
 
 def _postar_alerta(total: int) -> None:

@@ -63,6 +63,18 @@ BEGIN
   IF to_regclass('public.avaliacao_amostral') IS NOT NULL THEN
     GRANT SELECT ON TABLE avaliacao_amostral TO streamlit_readonly;
   END IF;
+  IF to_regclass('public.parametro_viabilidade') IS NOT NULL THEN
+    GRANT SELECT ON TABLE parametro_viabilidade TO streamlit_readonly;
+  END IF;
+  IF to_regclass('public.faixa_frete_nicho') IS NOT NULL THEN
+    GRANT SELECT ON TABLE faixa_frete_nicho TO streamlit_readonly;
+  END IF;
+  IF to_regclass('public.loja_pixel') IS NOT NULL THEN
+    GRANT SELECT ON TABLE loja_pixel TO streamlit_readonly;
+  END IF;
+  IF to_regclass('public.variacao_copy') IS NOT NULL THEN
+    GRANT SELECT ON TABLE variacao_copy TO streamlit_readonly;
+  END IF;
 END $$;
 
 DO $$

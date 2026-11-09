@@ -57,7 +57,13 @@ def rascunho_shopify(oferta: dict) -> str | None:
     token = ler_segredo("SHOPIFY_ADMIN_TOKEN").strip()
     loja = _loja_publica(ler_segredo("LOJA_SHOPIFY_DOMINIO"))
     preco = oferta.get("venda_brl")
-    if not token or not loja or preco is None:
+    liquida = oferta.get("margem_liquida_brl")
+    if not token or not loja or preco is None or liquida is None:
+        return None
+    try:
+        if Decimal(str(liquida)) <= 0:
+            return None
+    except InvalidOperation:
         return None
     vendido = (Decimal(str(preco)) * _markup()).quantize(Decimal("0.01"))
     identificador_oferta = oferta.get("oferta_id", oferta.get("id"))
