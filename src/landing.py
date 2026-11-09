@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 
@@ -420,6 +420,11 @@ def _ler_corpo(resposta: requests.Response) -> str | None:
 
 def buscar_html(url: str, tentativa: int = 0) -> str | None:
     """Lê o HTML no IP já validado. Recusa rede local e não segue redirect às cegas."""
+    from src.egress_pausa import pausa_ativa
+
+    if pausa_ativa():
+        logger.info("Egress pausado. A página não é aberta.")
+        return None
     atual = url
     for _ in range(MAX_REDIRECIONAMENTOS + 1):
         partes = urlsplit(atual)
@@ -493,6 +498,9 @@ _PRODUTO_SHOPIFY = re.compile(r"/products/([^/?#]+)")
 class LeituraPagina:
     origem: str
     preco: PrecoLido | None = None
+    pixels: tuple[str, ...] = ()
+    tem_bump: bool = False
+    preco_bump: Decimal | None = None
 
 
 def _preco_json_ld(html: str) -> PrecoLido | None:
@@ -626,18 +634,38 @@ def _rodadas_egress(url: str) -> int:
     return max(1, len(_proxies_egress()))
 
 
+def _com_funil(leitura: LeituraPagina, html: str | None) -> LeituraPagina:
+    if not isinstance(html, str):
+        return leitura
+    from src.funil import ler_funil
+
+    funil = ler_funil(html)
+    return replace(
+        leitura,
+        pixels=tuple(funil["pixels"]),
+        tem_bump=bool(funil["tem_bump"]),
+        preco_bump=funil["preco_bump"],
+    )
+
+
 def avaliar_destino(url: str) -> LeituraPagina:
     """Classifica a página. Shopify .js só entra se a página veio ausente ou bloqueada."""
+    from src.egress_pausa import registrar_resultado
+
     if not isinstance(url, str) or not url.strip():
         return LeituraPagina("ausente")
     endereco = url.strip()
     leitura = LeituraPagina("bloqueado")
+    html = None
     for tentativa in range(_rodadas_egress(endereco)):
         corpo = buscar_html(endereco, tentativa)
         if not isinstance(corpo, str):
             leitura = LeituraPagina("bloqueado")
             continue
+        html = corpo
         leitura = classificar_pagina(corpo)
         if leitura.origem != "bloqueado":
             break
+    leitura = _com_funil(leitura, html)
+    registrar_resultado(leitura.origem == "bloqueado")
     return _shopify_quando_falha(endereco, leitura)

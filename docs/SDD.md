@@ -15,6 +15,11 @@ O sistema recolhe anúncios da Biblioteca do Facebook, qualifica a oferta, lê o
 7. Quando a canônica está em teste e ainda não tem ângulo, o beat gera um único ângulo A/B.
 8. Às 03:00 o lifecycle remove ofertas fracas e apaga do R2 o vídeo que nenhuma outra oferta referencia.
 9. O painel Streamlit lê com `streamlit_readonly` e grava só `triagem_oferta`.
+10. A margem líquida usa frete do nicho e alíquotas da tabela `parametro_viabilidade`. Sem faixa de frete, a margem fica vazia e o rascunho Shopify não nasce.
+11. O pixel e o order bump saem do HTML já baixado. O índice de lojas conta avistamentos, não faturamento.
+12. Se `MODELO_TRIAGEM_PATH` aponta para um arquivo, a triagem local descarta texto genérico ou fora do catálogo com confiança de pelo menos 0,90. Sem o arquivo, o fluxo segue para o Gemini.
+13. A canônica estrelada ganha headline, gancho de UGC e texto de stories em `variacao_copy`. Nada disso vai ao gerenciador de anúncios.
+14. Bloqueios de egress acima de 30% em cinco minutos pausam a abertura de página por 15 minutos. O processo em `src/metricas.py` publica filas, PgBouncer e a razão de bloqueio em `:9108`. O backup contínuo com WAL-G fica numa imagem filha e não liga no Postgres padrão.
 
 ## Componentes
 

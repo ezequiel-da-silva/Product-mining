@@ -87,7 +87,7 @@ def _leitura(url: str | None) -> LeituraPagina:
     return LeituraPagina("ausente")
 
 
-def _gravar(cur, oferta_id: int, leitura: LeituraPagina, fechar: bool) -> None:
+def _gravar(cur, oferta_id: int, leitura: LeituraPagina, fechar: bool, url: str | None = None) -> None:
     if leitura.origem == "bloqueado":
         cur.execute(SQL_FECHAR_BLOQUEADO if fechar else SQL_CONSULTA_BLOQUEADA, {"id": oferta_id})
         return
@@ -114,11 +114,21 @@ def _gravar(cur, oferta_id: int, leitura: LeituraPagina, fechar: bool) -> None:
     cur.execute(SQL_PRECO_LIDO, params)
 
 
+def _anotar_funil(cur, oferta_id: int, url: str | None, leitura: LeituraPagina) -> None:
+    if not leitura.pixels and not leitura.tem_bump and leitura.preco_bump is None:
+        return
+    from src.funil import gravar_funil
+
+    gravar_funil(cur, oferta_id, url, leitura.pixels, leitura.tem_bump, leitura.preco_bump)
+
+
 def qualificar_pagina(conn, oferta_id: int, url: str | None) -> bool:
     leitura = _leitura(url)
     with conn.cursor() as cur:
-        _gravar(cur, oferta_id, leitura, True)
+        _gravar(cur, oferta_id, leitura, True, url)
         fechou = cur.rowcount == 1
+        if fechou:
+            _anotar_funil(cur, oferta_id, url, leitura)
     conn.commit()
     if fechou and leitura.preco is None:
         logger.info("Oferta %s concluída com dados comerciais ausentes.", oferta_id)
@@ -131,8 +141,10 @@ def aplicar_preco_lido(conn, oferta_id: int, url: str | None) -> bool:
     """Substitui o preço da fala quando a página traz BRL ou USD. Uma consulta por oferta."""
     leitura = _leitura(url)
     with conn.cursor() as cur:
-        _gravar(cur, oferta_id, leitura, False)
+        _gravar(cur, oferta_id, leitura, False, url)
         fechou = cur.rowcount == 1
+        if fechou:
+            _anotar_funil(cur, oferta_id, url, leitura)
     conn.commit()
     if fechou and leitura.preco is not None:
         logger.info("Oferta %s recebeu o preço lido na página de destino.", oferta_id)

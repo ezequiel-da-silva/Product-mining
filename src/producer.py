@@ -69,6 +69,11 @@ def url_cdp_conectavel(cdp_url: str) -> str:
 
 def despachar_anuncio_capturado(dados_brutos: dict):
     """Enfileira anúncio extraído na fila de qualificação determinística[cite: 1]."""
+    from src.sessao import sessao_permite_publicar
+
+    if not sessao_permite_publicar():
+        logger.info("Publicação pausada: a sessão da Biblioteca não está ok.")
+        return True
     try:
         app.send_task(
             "tasks.qualification.avaliar_oferta",
@@ -216,6 +221,15 @@ def _conectar_e_varrer(cdp_url: str) -> None:
             destino = url_cdp_conectavel(cdp_url)
             browser = p.chromium.connect_over_cdp(destino, timeout=30000)
             context = browser.contexts[0] if browser.contexts else browser.new_context()
+            from src.sessao import classificar_sessao, gravar_estado
+
+            urls = [getattr(pagina, "url", "") or "" for pagina in context.pages]
+            estado = classificar_sessao(urls)
+            gravar_estado(estado)
+            if estado != "ok":
+                logger.warning("Sessão %s. A publicação fica pausada até a aba da Biblioteca voltar.", estado)
+                time.sleep(60)
+                return
             page = _escolher_pagina_cdp(context)
             _varrer_com_pausa_de_fila(page)
         finally:

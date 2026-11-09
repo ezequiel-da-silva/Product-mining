@@ -93,7 +93,12 @@ GRANT UPDATE (
     fingerprint_audio,
     proxima_consulta_em,
     fornecedor_revisado_em,
-    fornecedor_status
+    fornecedor_status,
+    frete_estimado_brl,
+    imposto_estimado_brl,
+    margem_liquida_brl,
+    tem_order_bump,
+    preco_bump
 ) ON TABLE ofertas TO pipeline_writer;
 
 DO $$
@@ -128,6 +133,21 @@ BEGIN
   END IF;
   IF to_regclass('public.avaliacao_amostral_id_seq') IS NOT NULL THEN
     GRANT USAGE, SELECT ON SEQUENCE avaliacao_amostral_id_seq TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.parametro_viabilidade') IS NOT NULL THEN
+    GRANT SELECT ON TABLE parametro_viabilidade TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.faixa_frete_nicho') IS NOT NULL THEN
+    GRANT SELECT ON TABLE faixa_frete_nicho TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.loja_pixel') IS NOT NULL THEN
+    GRANT SELECT, INSERT ON TABLE loja_pixel TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.variacao_copy') IS NOT NULL THEN
+    GRANT SELECT, INSERT ON TABLE variacao_copy TO pipeline_writer;
+  END IF;
+  IF to_regclass('public.variacao_copy_id_seq') IS NOT NULL THEN
+    GRANT USAGE, SELECT ON SEQUENCE variacao_copy_id_seq TO pipeline_writer;
   END IF;
 END $$;
 

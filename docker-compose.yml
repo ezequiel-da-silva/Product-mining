@@ -158,6 +158,7 @@ services:
       - CLOUDFLARE_R2_ACCESS_KEY_PROXIMO=${CLOUDFLARE_R2_ACCESS_KEY_PROXIMO:-}
       - CLOUDFLARE_R2_SECRET_KEY_PROXIMO=${CLOUDFLARE_R2_SECRET_KEY_PROXIMO:-}
       - EGRESS_PROXIES=${EGRESS_PROXIES:-}
+      - MODELO_TRIAGEM_PATH=${MODELO_TRIAGEM_PATH:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -301,6 +302,38 @@ services:
         condition: service_healthy
     networks:
       - borda
+  metricas:
+    build:
+      context: .
+      dockerfile: ./docker/worker.Dockerfile
+    container_name: spy_metricas
+    restart: unless-stopped
+    command: python -m src.metricas
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,size=32m,mode=1777
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+    environment:
+      - HOME=/tmp
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - POSTGRES_URL=postgresql://pipeline_writer:${PIPELINE_DB_PASSWORD:?PIPELINE_DB_PASSWORD is required}@pgbouncer:6432/pgbouncer
+    ports:
+      - "127.0.0.1:9108:9108"
+    depends_on:
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    networks:
+      - dados
   flower:
     image: mher/flower:2.0
     container_name: spy_flower

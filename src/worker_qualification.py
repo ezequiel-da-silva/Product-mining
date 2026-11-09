@@ -641,6 +641,28 @@ def _copiar_enriquecimento(
     return True
 
 
+def _triagem_descarta(oferta_id: int, texto: str) -> bool:
+    from schemas import NICHOS_CANONICOS
+    from src.triagem_local import triagem_local
+
+    if triagem_local(texto, set(NICHOS_CANONICOS)) != "descartar":
+        return False
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE ofertas
+                SET status_qualificacao = 'descartado_local'
+                WHERE id = %(id)s
+                  AND status_qualificacao = 'pendente'
+                """,
+                {"id": oferta_id},
+            )
+        conn.commit()
+    logger.info("Oferta %s descartada pela triagem local.", oferta_id)
+    return True
+
+
 def _copy_com_legenda(copy: str, leitura: object) -> str:
     legenda = getattr(leitura, "legenda", "") or ""
     if not legenda:
@@ -773,6 +795,9 @@ def avaliar_oferta(self, payload: dict):
                     "score": oferta["score"],
                     "enriquecida": False,
                 }
+            texto_ia = _copy_com_legenda(campos.get("copy_texto") or "", extras.get("visao"))
+            if _triagem_descarta(oferta["id"], texto_ia):
+                return {"status": "descartado_local", "oferta_id": oferta["id"], "score": oferta["score"]}
             if _url_video_ja_analisada(video_r2_url, oferta["id"]):
                 return {
                     "status": "duplicate_video_url",
@@ -785,7 +810,7 @@ def avaliar_oferta(self, payload: dict):
                 args=[
                     oferta["id"],
                     video_r2_url,
-                    _copy_com_legenda(campos.get("copy_texto") or "", extras.get("visao")),
+                    texto_ia,
                 ],
                 queue="ai_multimodal_queue",
             )
