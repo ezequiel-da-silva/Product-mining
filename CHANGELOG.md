@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.8.1...v0.9.0) (2026-11-09)
+
+
+### Features
+
+* pausa sessão e egress e grava a margem líquida ([#17](https://github.com/ezequiel-da-silva/Product-mining/issues/17)) ([e91ea1b](https://github.com/ezequiel-da-silva/Product-mining/commit/e91ea1b3268d543f935a3f819d82867653c13db2))
+
+
+### Bug Fixes
+
+* acha o userlist do PgBouncer pela raiz do repositório ([#19](https://github.com/ezequiel-da-silva/Product-mining/issues/19)) ([2ab806d](https://github.com/ezequiel-da-silva/Product-mining/commit/2ab806d729287cc4a5f3bded5bccb44cd25b5a9a))
+
 ## [0.8.1](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.8.0...v0.8.1) (2026-11-05)
 
 
