@@ -299,10 +299,6 @@ docker compose exec postgres pg_dump -U spy_admin -d mineracao_fb -F c -b -v -f 
 
 
 
-## 🛡️ Protocolo de Farming (Contas Isca)
+## Sessão do navegador
 
-Para evitar bloqueios algorítmicos rigorosos, o sistema requer aquecimento (warm-up) das contas na máquina hospedeira antes de automatizar 100%:
-
-* **D1 a D3:** Cadastro sob IP móvel (4G/5G), navegação orgânica passiva e isolamento de hardware via perfil no Anti-Detect (5-10 min/dia).
-* **D4 e D5:** Aquecimento de Pixel comercial (buscas por nicho, simulação de *Add to Cart* e abandono de checkout em lojas Shopify/D2C).
-* **D7 em diante:** Ativação do script Playwright (contêiner `ad-producer`) em sessões de no máximo 15 minutos e rotação cíclica entre 3 perfis isca segmentados por nicho.
+O `ad-producer` entra numa única aba que o operador já abriu em `https://www.facebook.com/ads/library`, ou na URL de `CDP_TARGET_URL`. O código não abre perfil de anti-detect, não aquece conta e não simula `Add to Cart`. Se a aba cair, o producer para. A pausa explícita com alerta, e o restante das fronteiras de margem, funil e backup, estão em `docs/FRONTEIRAS.md`. Nada daquele documento está implementado além do que `docs/SDD.md` lista na seção da 0.8.1.

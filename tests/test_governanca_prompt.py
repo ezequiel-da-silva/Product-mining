@@ -90,3 +90,14 @@ def test_sdd_yaml_e_colunas_do_contrato():
     ):
         assert coluna in AnaliseAnuncioSchema.model_fields
         assert coluna in contrato
+
+
+def test_fronteiras_separa_o_que_nao_esta_no_codigo():
+    texto = (RAIZ / "docs/FRONTEIRAS.md").read_text(encoding="utf-8")
+    assert "ainda não está no código" in texto or "ainda não implementado" in texto
+    assert "rascunho_shopify" in texto
+    assert "compra forjada" in texto
+    assert "Não há context cache" in texto
+    sdd = (RAIZ / "docs/SDD.md").read_text(encoding="utf-8")
+    assert "docs/FRONTEIRAS.md" in sdd
+    assert "0.8.1" in sdd
