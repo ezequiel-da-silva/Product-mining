@@ -111,6 +111,7 @@ def test_o_beat_registra_o_envio_e_as_rotinas_novas(monkeypatch):
 def test_userlist_troca_um_papel_e_preserva_o_outro(tmp_path):
     import os
     import subprocess
+    from pathlib import Path
 
     arquivo = tmp_path / "userlist.txt"
     arquivo.write_text('"pipeline_writer" "antiga"\n"lifecycle_writer" "outra"\n', encoding="utf-8")
@@ -120,7 +121,8 @@ def test_userlist_troca_um_papel_e_preserva_o_outro(tmp_path):
     """
     ambiente = os.environ.copy()
     ambiente.update({"ARQUIVO": str(arquivo), "PAPEL": "pipeline_writer", "SENHA": 'seg"redo'})
-    subprocess.run(["sh", "-c", comando], check=True, cwd="/workspace", env=ambiente)
+    raiz = Path(__file__).resolve().parents[1]
+    subprocess.run(["sh", "-c", comando], check=True, cwd=raiz, env=ambiente)
     texto = arquivo.read_text(encoding="utf-8").splitlines()
     assert texto == ['"lifecycle_writer" "outra"', '"pipeline_writer" "seg""redo"']
 
