@@ -37,7 +37,10 @@ GRANT UPDATE (
     venda_brl,
     cogs_brl,
     paridade_vigencia,
-    paridade_fonte
+    paridade_fonte,
+    frete_estimado_brl,
+    imposto_estimado_brl,
+    margem_liquida_brl
 ) ON TABLE ofertas TO lifecycle_writer;
 
 DO $$

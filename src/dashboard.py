@@ -58,7 +58,8 @@ COLUNAS_OFERTA = """
     preco_oferta_estimado, preco_moeda, score, margem_estimada_pct, data_ultima_captura,
     dados_comerciais_ausentes, cogs_estimado, cogs_moeda, fornecedor_url,
     fornecedor_origem, provas_sociais, venda_brl, cogs_brl,
-    paridade_vigencia, paridade_fonte
+    paridade_vigencia, paridade_fonte, margem_liquida_brl, preco_bump,
+    tem_order_bump
 """
 ROTULOS_OFERTAS = {
     "id": "Identificador",
@@ -474,6 +475,11 @@ def _mostrar_margem(valor: object, moeda: str | None = None, oferta: dict | None
         st.html(html_badge(ESTIMATIVA_SOURCING, "estimativa"))
         st.caption(LEGENDA_MARGEM)
     if isinstance(oferta, dict):
+        liquida = oferta.get("margem_liquida_brl")
+        if liquida is not None:
+            st.caption(f"Margem líquida: R$ {liquida}")
+        if oferta.get("preco_bump") is not None:
+            st.caption(f"Bump explícito: R$ {oferta.get('preco_bump')}")
         cogs = texto_cogs(oferta)
         if cogs:
             st.caption(cogs)

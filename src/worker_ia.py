@@ -1495,3 +1495,89 @@ def avaliar_amostra() -> dict:
         _registrar_parecer(int(linha["id"]), str(linha.get("nicho_extraido") or ""), nicho_juiz, motivo)
         julgadas += 1
     return {"julgadas": julgadas}
+
+
+SQL_VARIACOES_PENDENTES = """
+SELECT ofertas.id, ofertas.nicho, ofertas.copy_texto, ofertas.gancho_3s, ofertas.objecoes_quebradas
+FROM ofertas
+JOIN triagem_oferta ON triagem_oferta.oferta_id = ofertas.id
+WHERE ofertas.oferta_canonica_id IS NULL
+  AND ofertas.status_qualificacao = 'concluido'
+  AND triagem_oferta.estado = 'estrelada'
+  AND NOT EXISTS (
+      SELECT 1 FROM variacao_copy WHERE variacao_copy.oferta_id = ofertas.id
+  )
+ORDER BY ofertas.id
+LIMIT 3
+"""
+
+
+def _pecas_de_variacao(oferta: dict) -> dict[str, str] | None:
+    resposta = cliente_ia.models.generate_content(
+        model=MODELO_ANALISE,
+        contents=(
+            "Escreva três peças para teste do anúncio. Não publique nada. "
+            "Não invente preço, depoimento nem fornecedor.\n"
+            f"Nicho: {str(oferta.get('nicho') or '')[:100]}\n"
+            f"Gancho: {str(oferta.get('gancho_3s') or '')[:500]}\n"
+            f"Objeções: {str(oferta.get('objecoes_quebradas') or '')[:500]}\n"
+            f"Copy: {str(oferta.get('copy_texto') or '')[:800]}\n"
+            'Responda JSON com as chaves "headline", "ugc" e "stories".'
+        ),
+        config=types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type="application/json",
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    dados = json.loads(getattr(resposta, "text", None) or "")
+    if not isinstance(dados, dict):
+        return None
+    pecas = {}
+    for peca in ("headline", "ugc", "stories"):
+        texto = dados.get(peca)
+        if not isinstance(texto, str) or not texto.strip():
+            return None
+        pecas[peca] = texto.strip()[:500]
+    return pecas
+
+
+def _gravar_variacoes(oferta_id: int, pecas: dict[str, str]) -> None:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            for peca, texto in pecas.items():
+                cur.execute(
+                    """
+                    INSERT INTO variacao_copy (oferta_id, peca, texto)
+                    VALUES (%(id)s, %(peca)s, %(texto)s)
+                    ON CONFLICT (oferta_id, peca) DO NOTHING
+                    """,
+                    {"id": oferta_id, "peca": peca, "texto": texto},
+                )
+        conn.commit()
+
+
+@app.task(name="src.worker_ia.gerar_variacoes_copy")
+def gerar_variacoes_copy() -> dict:
+    """Três peças para a canônica estrelada. Não envia ao gerenciador de anúncios."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SQL_VARIACOES_PENDENTES)
+            lote = cur.fetchall()
+        conn.commit()
+    if not isinstance(lote, list):
+        return {"geradas": 0}
+    geradas = 0
+    for oferta in lote:
+        if not isinstance(oferta, dict):
+            continue
+        try:
+            pecas = _pecas_de_variacao(oferta)
+        except Exception:
+            logger.exception("Falha ao gerar variações da oferta %s.", oferta.get("id"))
+            continue
+        if not pecas:
+            continue
+        _gravar_variacoes(int(oferta["id"]), pecas)
+        geradas += 1
+    return {"geradas": geradas}

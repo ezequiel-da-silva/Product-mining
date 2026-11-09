@@ -54,7 +54,8 @@ for file in \
   infra/migrations/022_paridade_cambio.sql \
   infra/migrations/023_integracao_evento.sql \
   infra/migrations/024_particoes_oferta_vetor.sql \
-  infra/migrations/025_escala_visao_e_eventos.sql
+  infra/migrations/025_escala_visao_e_eventos.sql \
+  infra/migrations/026_viabilidade_funil.sql
 do
   versao=$(basename "$file" .sql)
   applied=$(
