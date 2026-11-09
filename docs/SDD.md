@@ -42,4 +42,16 @@ O sistema recolhe anúncios da Biblioteca do Facebook, qualifica a oferta, lê o
 
 ## Moeda e margem
 
-O preço falado e o preço da página usam BRL ou USD. O COGS do 1688 é CNY e o do AliExpress é USD. A margem estimada do modelo só é substituída pelo cálculo `(venda - COGS) / venda` quando as duas moedas coincidem. Venda em BRL com custo em CNY permanece estimativa e o painel mostra os dois números.
+O preço falado e o preço da página usam BRL ou USD. O COGS do 1688 é CNY e o do AliExpress é USD. A margem estimada do modelo só é substituída pelo cálculo `(venda - COGS) / venda` quando as duas moedas coincidem. Venda em BRL com custo em CNY permanece estimativa e o painel mostra os dois números. Imposto, gateway e frete entram em `margem_liquida_brl`.
+
+## Estado
+
+As migrações vão de `001` a `026`. O mapa do que entrou e do que continua de fora está em `docs/FRONTEIRAS.md`.
+
+- O producer usa uma única aba CDP em `host.docker.internal`, na Biblioteca de Anúncios ou em `CDP_TARGET_URL`. O aquecimento do navegador continua manual.
+- A página de destino sai por `curl_cffi` com `impersonate` de Chrome quando `EGRESS_PROXIES` está definido. O resolve é `HOST:PORT:IP`. Sem proxy, o socket continua no IP já validado.
+- A rede `dados` é internal. A rede `borda` leva o dashboard e a saída dos workers. O PgBouncer fica em modo transação. O `userlist.txt` vive em tmpfs e a rotação de senha manda `SIGHUP`.
+- Visão: OCR do primeiro quadro, cortes nos 30 primeiros segundos e fingerprint de áudio com folga de quatro quadros.
+- O rascunho de loja é só Shopify, em `rascunho_shopify`. WooCommerce é marcador de host, junto com Yampi e Cartpanda.
+- O cache de embedding é por hash de texto. Não há context cache do Gemini. A extração usa `thinking_budget` 0.
+- O juiz de 2% só chama a API quando `MODELO_JUIZ` é outro modelo. HTTP 429 interrompe o lote e não devolve a tarefa à fila.

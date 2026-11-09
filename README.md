@@ -299,10 +299,12 @@ docker compose exec postgres pg_dump -U spy_admin -d mineracao_fb -F c -b -v -f 
 
 
 
-## 🛡️ Protocolo de Farming (Contas Isca)
+## Sessão do navegador
 
 O aquecimento continua manual. O producer não abre perfil, não simula carrinho e não troca de conta. A pessoa usa o navegador que ela mesma abriu.
 
 * **D1 a D3:** A pessoa cadastra a conta no IP móvel e navega por conta própria, com o perfil isolado no anti-detect.
 * **D4 e D5:** A pessoa visita as lojas do nicho no mesmo navegador. O software não clica em carrinho nem abandona checkout.
 * **D7 em diante:** O `ad-producer` só lê a aba da Biblioteca que já estiver aberta. Se a aba some ou a sessão cai no login, ele grava `sessao:estado` e para de publicar. A retomada é humana.
+
+O que o código faz e o que continua manual está em `docs/FRONTEIRAS.md`.

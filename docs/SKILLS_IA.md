@@ -48,3 +48,9 @@ A cada dois minutos, `tasks.qualification.revisar_concluidas` consulta até cinc
 - A página do produto escolhido fornece até cinco depoimentos com nota exata de 5, texto ou foto de cliente.
 - A margem estimada só é substituída quando a venda e o COGS estão na mesma moeda.
 - A consulta é registrada mesmo quando o marketplace devolve uma página sem preço. Outra tentativa exige limpar `fornecedor_consultado_em`.
+
+## Cache e juiz
+
+O embedding reutiliza o vetor quando o hash do texto já existe. Isso não é context cache do Gemini. A extração e o ângulo seguem com `thinking_budget` 0, sem cache de contexto.
+
+`MODELO_JUIZ` vazio, ou igual ao modelo da extração, responde `sem_juiz` e não chama a API. Com outro modelo, a amostra fica em 2% das conclusões do dia. Um HTTP 429 interrompe o lote, apaga as amostras ainda sem parecer e não reagenda a tarefa. A chamada roda na `ai_multimodal_queue`. O Beat só enfileira.
