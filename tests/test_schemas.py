@@ -5,7 +5,13 @@ import pytest
 from pydantic import ValidationError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from schemas import NICHOS_CANONICOS, AnaliseAnuncioSchema, GeracaoAnguloSchema, nicho_canonico
+from schemas import (
+    NICHOS_CANONICOS,
+    AnaliseAnuncioSchema,
+    GeracaoAnguloSchema,
+    nicho_canonico,
+    schema_geracao_angulo,
+)
 
 
 def test_analise_schema_sucesso():
@@ -14,6 +20,7 @@ def test_analise_schema_sucesso():
         "gancho_3s": "Explosão na tela.",
         "nicho": "Utilidades",
         "gatilho_mental": "Urgência",
+        "tipo_angulo": "demonstracao",
         "objecoes_quebradas": ["É caro", "Demora"],
         "preco_oferta_estimado": 199.90,
         "preco_moeda": "brl",
@@ -32,6 +39,7 @@ def test_analise_schema_sucesso():
     assert esquema.sub_nicho is None
     assert esquema.preco_oferta_estimado == 199.90
     assert esquema.preco_moeda == "BRL"
+    assert esquema.tipo_angulo == "demonstracao"
 
 
 def test_analise_schema_rejeita_nicho_livre():
@@ -53,6 +61,7 @@ def test_analise_schema_outros_exige_sub_nicho():
         "gancho_3s": "Produto na mão.",
         "nicho": "Outros",
         "gatilho_mental": "Urgência",
+        "tipo_angulo": "dor_problema",
         "objecoes_quebradas": [],
         "angulos_alternativos": [],
     }
@@ -78,6 +87,7 @@ def test_analise_schema_descarta_preco_ambiguo():
         "gancho_3s": "Produto na mão.",
         "nicho": "Casa",
         "gatilho_mental": "Preço",
+        "tipo_angulo": "comparativo",
         "objecoes_quebradas": [],
         "preco_oferta_estimado": 199.90,
         "angulos_alternativos": [],
@@ -94,13 +104,13 @@ def test_analise_schema_descarta_preco_ambiguo():
 def test_geracao_de_angulo_aceita_um_e_rejeita_dois():
     um = {
         "angulos_alternativos": [
-            {"titulo": "Um", "foco_emocional": "Medo", "copy_sugerida": "Copy 1"},
+            {"tipo": "dor_problema", "titulo": "Um", "foco_emocional": "Medo", "copy_sugerida": "Copy 1"},
         ]
     }
     dois = {
         "angulos_alternativos": [
-            {"titulo": "Um", "foco_emocional": "Medo", "copy_sugerida": "Copy 1"},
-            {"titulo": "Dois", "foco_emocional": "Vaidade", "copy_sugerida": "Copy 2"},
+            {"tipo": "dor_problema", "titulo": "Um", "foco_emocional": "Medo", "copy_sugerida": "Copy 1"},
+            {"tipo": "demonstracao", "titulo": "Dois", "foco_emocional": "Vaidade", "copy_sugerida": "Copy 2"},
         ]
     }
 
@@ -109,6 +119,46 @@ def test_geracao_de_angulo_aceita_um_e_rejeita_dois():
         GeracaoAnguloSchema(**dois)
     with pytest.raises(ValidationError):
         GeracaoAnguloSchema(angulos_alternativos=[])
+
+
+def test_angulo_oposto_rejeita_o_arquétipo_original():
+    esquema = schema_geracao_angulo("demonstracao")
+    with pytest.raises(ValidationError):
+        esquema(
+            angulos_alternativos=[
+                {
+                    "tipo": "demonstracao",
+                    "titulo": "Igual",
+                    "foco_emocional": "Uso",
+                    "copy_sugerida": "Veja funcionar.",
+                }
+            ]
+        )
+    gerado = esquema(
+        angulos_alternativos=[
+            {
+                "tipo": "dor_problema",
+                "titulo": "Oposto",
+                "foco_emocional": "Dor",
+                "copy_sugerida": "Cansou do jeito antigo.",
+            }
+        ]
+    )
+    assert gerado.angulos_alternativos[0].tipo == "dor_problema"
+    assert schema_geracao_angulo(None) is GeracaoAnguloSchema
+
+
+def test_analise_rejeita_arquétipo_desconhecido():
+    dados = {
+        "transcricao_video": "Teste",
+        "gancho_3s": "Gancho",
+        "nicho": "Casa",
+        "gatilho_mental": "Urgência",
+        "tipo_angulo": "oferta",
+        "objecoes_quebradas": [],
+    }
+    with pytest.raises(ValidationError):
+        AnaliseAnuncioSchema(**dados)
 
 
 def test_analise_schema_falha_campo_obrigatorio():

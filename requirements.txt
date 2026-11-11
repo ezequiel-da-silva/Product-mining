@@ -1,4 +1,5 @@
 celery==5.4.0
+kombu==5.6.2               # 5.7 exige redis-py >= 6.1; o projeto permanece em redis 5.0.3
 redis==5.0.3
 psycopg[binary]==3.1.18
 psycopg-pool==3.2.2

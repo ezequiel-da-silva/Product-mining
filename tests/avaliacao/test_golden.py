@@ -15,6 +15,7 @@ def _analise(**extra) -> dict:
         "gancho_3s": "O produto aparece na mão.",
         "nicho": "Pet",
         "gatilho_mental": "Prova social",
+        "tipo_angulo": "prova_social_ugc",
         "objecoes_quebradas": ["frete", "prazo", "confiança"],
         "preco_oferta_estimado": 49.9,
         "preco_moeda": "BRL",
@@ -45,7 +46,12 @@ def test_eur_descarta_o_preco_e_nicho_ou_fornecedor_rejeitam():
 
 
 def test_angulo_aceita_um_e_rejeita_dois():
-    angulo = AnguloVenda(titulo="Tempo", foco_emocional="Praticidade", copy_sugerida="Ganhe o dia.")
+    angulo = AnguloVenda(
+        tipo="dor_problema",
+        titulo="Tempo",
+        foco_emocional="Praticidade",
+        copy_sugerida="Ganhe o dia.",
+    )
     gerado = GeracaoAnguloSchema(angulos_alternativos=[angulo])
     assert len(gerado.angulos_alternativos) == 1
     with pytest.raises(ValidationError):

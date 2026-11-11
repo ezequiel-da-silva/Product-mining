@@ -52,6 +52,7 @@ GRANT UPDATE (
     nicho,
     sub_nicho,
     gatilho_mental,
+    tipo_angulo,
     preco_oferta_estimado,
     preco_moeda,
     preco_pagina_consultado_em,

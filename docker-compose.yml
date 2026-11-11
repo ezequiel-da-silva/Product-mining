@@ -69,7 +69,7 @@ services:
       timeout: 3s
       retries: 5
   pgbouncer:
-    image: edoburu/pgbouncer:v1.22.0
+    image: edoburu/pgbouncer:1.22.0-p0
     container_name: spy_pgbouncer
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/opt/pgbouncer-entrypoint.sh"]

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS ofertas (
     nicho VARCHAR(100),
     sub_nicho VARCHAR(100),
     gatilho_mental VARCHAR(100),
+    tipo_angulo TEXT,
     preco_oferta_estimado NUMERIC(10, 2),
     preco_moeda VARCHAR(3),
     preco_pagina_consultado_em TIMESTAMPTZ,
@@ -99,7 +100,12 @@ CREATE TABLE IF NOT EXISTS ofertas (
     CONSTRAINT ofertas_canonica_diferente_check
         CHECK (oferta_canonica_id IS NULL OR oferta_canonica_id <> id),
     CONSTRAINT ofertas_fadiga_dias_check
-        CHECK (fadiga_dias >= 0)
+        CHECK (fadiga_dias >= 0),
+    CONSTRAINT ofertas_tipo_angulo_check
+        CHECK (
+            tipo_angulo IS NULL
+            OR tipo_angulo IN ('dor_problema', 'demonstracao', 'prova_social_ugc', 'comparativo')
+        )
 );
 
 ALTER TABLE ofertas

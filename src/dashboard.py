@@ -53,7 +53,7 @@ PAGE_SIZE = 10
 LIMITE_EMBEDDING_POR_MINUTO = 12
 JANELA_EMBEDDING_SEGUNDOS = 60.0
 COLUNAS_OFERTA = """
-    id, nicho, sub_nicho, gancho_3s, gatilho_mental, url_destino, copy_texto,
+    id, nicho, sub_nicho, gancho_3s, gatilho_mental, tipo_angulo, url_destino, copy_texto,
     transcricao_video, url_video_r2, objecoes_quebradas, angulos_alternativos,
     preco_oferta_estimado, preco_moeda, score, margem_estimada_pct, data_ultima_captura,
     dados_comerciais_ausentes, cogs_estimado, cogs_moeda, fornecedor_url,
@@ -67,6 +67,7 @@ ROTULOS_OFERTAS = {
     "sub_nicho": "Subnicho",
     "gancho_3s": "Gancho",
     "gatilho_mental": "Gatilho",
+    "tipo_angulo": "Arquétipo",
     "url_destino": "Link da oferta",
     "copy_texto": "Copy",
     "transcricao_video": "Transcrição",
@@ -410,6 +411,20 @@ def _rotulo_paridade(oferta: dict) -> str | None:
     fonte = oferta.get("paridade_fonte") or ""
     vigencia = oferta.get("paridade_vigencia") or ""
     return f"{_rotulo_percentual(percentual)} · paridade {fonte} {vigencia}".strip()
+
+
+ROTULOS_TIPO_ANGULO = {
+    "dor_problema": "Dor / problema",
+    "demonstracao": "Demonstração",
+    "prova_social_ugc": "Prova social / UGC",
+    "comparativo": "Comparativo",
+}
+
+
+def rotulo_tipo_angulo(valor: object) -> str:
+    if not isinstance(valor, str):
+        return "—"
+    return ROTULOS_TIPO_ANGULO.get(valor, "—")
 
 
 def rotulo_margem(
@@ -848,7 +863,9 @@ def _escrever_angulos(valor: object) -> None:
             continue
         titulo = str(angulo.get("titulo") or "Ângulo")
         foco = str(angulo.get("foco_emocional") or "").strip()
-        linha = f"{titulo} — {foco}" if foco else titulo
+        tipo = ROTULOS_TIPO_ANGULO.get(str(angulo.get("tipo") or ""))
+        nome = f"{tipo}: {titulo}" if tipo else titulo
+        linha = f"{nome} — {foco}" if foco else nome
         st.text(linha)
         st.write(angulo.get("copy_sugerida") or "—")
 
@@ -912,6 +929,8 @@ def _corpo_dialogo(oferta: dict) -> None:
         with st.container(border=True, height="stretch"):
             st.caption(ROTULOS_OFERTAS["gatilho_mental"])
             st.write(oferta.get("gatilho_mental") or "—")
+            st.caption(ROTULOS_OFERTAS["tipo_angulo"])
+            st.write(rotulo_tipo_angulo(oferta.get("tipo_angulo")))
     with margem:
         with st.container(border=True, height="stretch"):
             st.caption(ROTULOS_OFERTAS["margem_estimada_pct"])

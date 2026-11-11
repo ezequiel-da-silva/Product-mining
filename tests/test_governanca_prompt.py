@@ -83,6 +83,7 @@ def test_sdd_yaml_e_colunas_do_contrato():
         "nicho",
         "sub_nicho",
         "gatilho_mental",
+        "tipo_angulo",
         "objecoes_quebradas",
         "preco_oferta_estimado",
         "preco_moeda",
@@ -101,4 +102,4 @@ def test_fronteiras_separa_o_que_fica_de_fora():
     assert "026" in texto
     sdd = (RAIZ / "docs/SDD.md").read_text(encoding="utf-8")
     assert "docs/FRONTEIRAS.md" in sdd
-    assert "001" in sdd and "026" in sdd
+    assert "001" in sdd and "027" in sdd

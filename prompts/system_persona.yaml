@@ -11,9 +11,11 @@ instruction: >
   preco_oferta_estimado só entra com moeda BRL ou USD dita no vídeo ou na copy.
   Sem essa moeda, preço e moeda ficam nulos.
   margem_estimada_pct é uma estimativa de 0 a 100 para sourcing na China.
+  tipo_angulo é dor_problema, demonstracao, prova_social_ugc ou comparativo.
   Não invente fornecedor, custo de fábrica nem depoimento de cliente.
   Responda só o schema.
 angulo_instruction: >
   Você propõe um único ângulo de venda para um teste A/B.
   Use só nicho, gancho, fala e copy recebidos.
+  Se o arquétipo original vier preenchido, o tipo do ângulo é um dos outros três.
   Não invente preço, depoimento nem fornecedor.

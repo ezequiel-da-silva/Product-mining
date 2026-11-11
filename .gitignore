@@ -5,6 +5,7 @@ __pycache__/
 *.so
 venv/
 .venv/
+.venv-linux/
 .env
 
 # Segredos locais montados em /run/secrets

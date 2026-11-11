@@ -19,6 +19,7 @@ from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
 from jinja2 import Template
+from pydantic import ValidationError
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -29,7 +30,14 @@ if BASE_DIR not in sys.path:
 from core.celery_app import app  # noqa: E402
 from core.pontuacao import BONUS_ANALISE_IA, TETO_SCORE  # noqa: E402
 from core.secrets import ler_segredo  # noqa: E402
-from schemas import AnaliseAnuncioSchema, GeracaoAnguloSchema, nicho_canonico  # noqa: E402
+from schemas import (  # noqa: E402
+    AnaliseAnuncioSchema,
+    ParecerJuizSchema,
+    PecasVariacaoSchema,
+    TIPOS_ANGULO,
+    nicho_canonico,
+    schema_geracao_angulo,
+)
 from src.agrupamento import vincular_grupo  # noqa: E402
 from src.comercial import aplicar_preco_lido, qualificar_pagina  # noqa: E402
 from src.midia_r2 import url_leitura  # noqa: E402
@@ -185,7 +193,6 @@ def _reservar_oferta_para_processamento(oferta_id: int) -> tuple[str, int, str |
             return "unavailable", 0, None
 
 
-_contexto_falha: dict | None = None
 TETO_RESPOSTA_BRUTA = 20_000
 TETO_MOTIVO_IA = 500
 
@@ -248,9 +255,15 @@ def _gravar_falha_definitiva(cur, oferta_id: int, contexto: dict) -> None:
     )
 
 
-def _liberar_reserva_erro(oferta_id: int, token: str, definitiva: bool = False):
+def _liberar_reserva_erro(
+    oferta_id: int,
+    token: str,
+    definitiva: bool = False,
+    contexto: dict | None = None,
+):
     """Restaura somente a reserva pertencente a esta execução."""
-    contexto = _contexto_falha if definitiva else None
+    if not definitiva:
+        contexto = None
     incremento = 0 if contexto else int(definitiva)
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -280,6 +293,7 @@ SET transcricao_video = origem.transcricao_video,
     nicho = origem.nicho,
     sub_nicho = origem.sub_nicho,
     gatilho_mental = origem.gatilho_mental,
+    tipo_angulo = origem.tipo_angulo,
     objecoes_quebradas = origem.objecoes_quebradas,
     angulos_alternativos = origem.angulos_alternativos,
     embedding_analise = origem.embedding_analise,
@@ -391,6 +405,7 @@ def persistir_resultado_ia(
                     nicho = %(nicho)s,
                     sub_nicho = %(sub_nicho)s,
                     gatilho_mental = %(gatilho)s,
+                    tipo_angulo = %(tipo_angulo)s,
                     preco_oferta_estimado = %(preco)s,
                     preco_moeda = %(moeda)s,
                     margem_estimada_pct = %(margem)s,
@@ -421,6 +436,7 @@ def persistir_resultado_ia(
                     "nicho": dados["nicho"],
                     "sub_nicho": dados.get("sub_nicho"),
                     "gatilho": dados["gatilho_mental"],
+                    "tipo_angulo": dados.get("tipo_angulo"),
                     "preco": preco,
                     "moeda": moeda,
                     "margem": dados.get("margem_estimada_pct"),
@@ -821,17 +837,19 @@ def _tratar_falha_processamento(
     republicar: bool = True,
     resposta_bruta: str | None = None,
 ) -> dict:
-    global _contexto_falha
     configuracao = _erro_configuracao(erro)
     definitiva = not configuracao and (_erro_permanente(erro) or task.request.retries >= task.max_retries)
     entregue = False
+    contexto = (
+        _montar_contexto_falha(erro, analise, uso_tokens, video_url_r2, ad_copy_texto, resposta_bruta)
+        if definitiva and republicar
+        else None
+    )
     try:
-        _contexto_falha = (
-            _montar_contexto_falha(erro, analise, uso_tokens, video_url_r2, ad_copy_texto, resposta_bruta)
-            if definitiva and republicar
-            else None
-        )
-        _liberar_reserva_erro(oferta_id, lease_token, definitiva and republicar)
+        if contexto is None:
+            _liberar_reserva_erro(oferta_id, lease_token, definitiva and republicar)
+        else:
+            _liberar_reserva_erro(oferta_id, lease_token, definitiva and republicar, contexto)
         entregue = True
     except Exception as cleanup_error:
         logger.exception(
@@ -839,8 +857,6 @@ def _tratar_falha_processamento(
             oferta_id,
             cleanup_error,
         )
-    finally:
-        _contexto_falha = None
     if configuracao:
         logger.critical(
             "[Oferta %s] Erro de configuração do Gemini; oferta não penalizada: %s",
@@ -1220,7 +1236,8 @@ def reprocessar_falha_da_tabela(self, falha_id: int):
 
 SQL_OFERTAS_EM_TESTE = """
 SELECT ofertas.id, ofertas.nicho, ofertas.sub_nicho, ofertas.gancho_3s,
-       ofertas.gatilho_mental, ofertas.copy_texto, ofertas.transcricao_video
+       ofertas.gatilho_mental, ofertas.tipo_angulo, ofertas.copy_texto,
+       ofertas.transcricao_video
 FROM ofertas
 JOIN triagem_oferta AS triagem ON triagem.oferta_id = ofertas.id
 WHERE triagem.estado = 'testando'
@@ -1257,6 +1274,7 @@ def _corte(valor: object, limite: int) -> str:
 
 
 def _campos_do_angulo(oferta: dict) -> dict:
+    original = oferta.get("tipo_angulo")
     return {
         "nicho": _corte(oferta.get("nicho"), 100),
         "sub_nicho": _corte(oferta.get("sub_nicho"), 100),
@@ -1264,12 +1282,20 @@ def _campos_do_angulo(oferta: dict) -> dict:
         "gatilho": _corte(oferta.get("gatilho_mental"), 200),
         "fala": _corte(oferta.get("transcricao_video"), 800),
         "copy": _corte(oferta.get("copy_texto"), 800),
+        "angulo_original": original if original in TIPOS_ANGULO else "",
     }
 
 
 def _texto_angulo_padrao(campos: dict) -> str:
+    contraste = ""
+    if campos.get("angulo_original"):
+        contraste = (
+            f"O anúncio original usa o arquétipo {campos['angulo_original']}. "
+            "O teste usa outro arquétipo, nunca o mesmo.\n"
+        )
     return (
         "Gere 1 ângulo de venda, o mais forte, para um teste A/B desta oferta.\n"
+        f"{contraste}"
         f"Nicho: {campos['nicho']}\n"
         f"Subnicho: {campos['sub_nicho']}\n"
         f"Gancho: {campos['gancho']}\n"
@@ -1307,18 +1333,22 @@ def _gravar_angulo(conn, oferta_id: int, angulos: list[dict]) -> bool:
 
 
 def _gerar_angulo(oferta: dict) -> bool:
+    original = oferta.get("tipo_angulo")
+    if original not in TIPOS_ANGULO:
+        original = None
+    esquema = schema_geracao_angulo(original)
     resposta = cliente_ia.models.generate_content(
         model=MODELO_ANALISE,
         contents=_texto_do_angulo(oferta),
         config=types.GenerateContentConfig(
             temperature=TEMPERATURA_ANALISE,
             response_mime_type="application/json",
-            response_schema=GeracaoAnguloSchema,
+            response_schema=esquema,
             system_instruction=instrucao_angulo,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
-    gerado = GeracaoAnguloSchema(**json.loads(resposta.text))
+    gerado = esquema.model_validate_json(resposta.text or "")
     angulos = [item.model_dump() for item in gerado.angulos_alternativos]
     with get_pool().connection() as conn:
         return _gravar_angulo(conn, int(oferta["id"]), angulos)
@@ -1394,13 +1424,15 @@ def _parecer_juiz(modelo: str, nicho: str, gancho: str, fala: str) -> tuple[str 
         config=types.GenerateContentConfig(
             temperature=0,
             response_mime_type="application/json",
+            response_schema=ParecerJuizSchema,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
-    dados = json.loads(getattr(resposta, "text", None) or "")
-    bruto = dados.get("nicho") if isinstance(dados, dict) else None
-    motivo = dados.get("motivo") if isinstance(dados, dict) else ""
-    return nicho_canonico(bruto) if isinstance(bruto, str) else None, str(motivo or "")[:500]
+    try:
+        dados = ParecerJuizSchema.model_validate_json(getattr(resposta, "text", None) or "")
+    except (ValidationError, json.JSONDecodeError) as erro:
+        return None, str(erro)[:500]
+    return nicho_canonico(dados.nicho), dados.motivo[:500]
 
 
 def _descartar_amostras(amostra_ids: list[int]) -> None:
@@ -1522,23 +1554,24 @@ def _pecas_de_variacao(oferta: dict) -> dict[str, str] | None:
             f"Gancho: {str(oferta.get('gancho_3s') or '')[:500]}\n"
             f"Objeções: {str(oferta.get('objecoes_quebradas') or '')[:500]}\n"
             f"Copy: {str(oferta.get('copy_texto') or '')[:800]}\n"
-            'Responda JSON com as chaves "headline", "ugc" e "stories".'
         ),
         config=types.GenerateContentConfig(
             temperature=0.2,
             response_mime_type="application/json",
+            response_schema=PecasVariacaoSchema,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
-    dados = json.loads(getattr(resposta, "text", None) or "")
-    if not isinstance(dados, dict):
+    try:
+        dados = PecasVariacaoSchema.model_validate_json(getattr(resposta, "text", None) or "")
+    except (ValidationError, json.JSONDecodeError):
         return None
     pecas = {}
     for peca in ("headline", "ugc", "stories"):
-        texto = dados.get(peca)
-        if not isinstance(texto, str) or not texto.strip():
+        texto = getattr(dados, peca).strip()
+        if not texto:
             return None
-        pecas[peca] = texto.strip()[:500]
+        pecas[peca] = texto[:500]
     return pecas
 
 

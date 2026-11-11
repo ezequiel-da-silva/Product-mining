@@ -83,6 +83,7 @@ def _dados_analise():
         "gancho_3s": "Abertura rápida",
         "nicho": "Saúde e Beleza",
         "gatilho_mental": "Escassez",
+        "tipo_angulo": "demonstracao",
         "objecoes_quebradas": ["Caro"],
         "angulos_alternativos": [],
     }
@@ -115,6 +116,7 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
         "gancho_3s": "Abertura rápida",
         "nicho": "Saúde e Beleza",
         "gatilho_mental": "Escassez",
+        "tipo_angulo": "demonstracao",
         "preco_oferta_estimado": 99.90,
         "preco_moeda": "BRL",
         "margem_estimada_pct": 60,
@@ -150,6 +152,8 @@ def test_persistir_resultado_ia_mock(mock_pool_db):
 
     assert parametros_sql["id"] == 42
     assert parametros_sql["nicho"] == "Saúde e Beleza"
+    assert parametros_sql["tipo_angulo"] == "demonstracao"
+    assert "tipo_angulo = %(tipo_angulo)s" in args_chamada[0]
     assert parametros_sql["sub_nicho"] is None
     assert "sub_nicho = %(sub_nicho)s" in args_chamada[0]
     assert parametros_sql["preco"] == 99.90
@@ -485,7 +489,9 @@ def test_value_error_vai_para_dlq_sem_retry(monkeypatch):
     result = worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
 
     assert result == {"status": "dead_letter", "oferta_id": 7}
-    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", True)
+    chamada = worker._liberar_reserva_erro.call_args
+    assert chamada.args[:3] == (7, "token-1", True)
+    assert isinstance(chamada.args[3], dict)
     task_self.retry.assert_not_called()
     _assert_dead_letter(send_task, com_analise=False)
 
@@ -628,7 +634,9 @@ def test_client_error_400_sem_api_key_continua_permanente(monkeypatch):
     result = worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
 
     assert result == {"status": "dead_letter", "oferta_id": 7}
-    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", True)
+    chamada = worker._liberar_reserva_erro.call_args
+    assert chamada.args[:3] == (7, "token-1", True)
+    assert isinstance(chamada.args[3], dict)
     task_self.retry.assert_not_called()
     _assert_dead_letter(send_task, com_analise=False)
 
@@ -656,7 +664,9 @@ def test_ultima_tentativa_transitoria_vai_para_dlq(monkeypatch):
     result = worker.processar_anuncio_multimodal(task_self, 7, VIDEO_R2_URL, "copy")
 
     assert result == {"status": "dead_letter", "oferta_id": 7}
-    worker._liberar_reserva_erro.assert_called_once_with(7, "token-1", True)
+    chamada = worker._liberar_reserva_erro.call_args
+    assert chamada.args[:3] == (7, "token-1", True)
+    assert isinstance(chamada.args[3], dict)
     task_self.retry.assert_not_called()
     _assert_dead_letter(send_task, com_analise=False)
 
@@ -956,6 +966,7 @@ def test_skills_carregam_persona_e_o_template_do_angulo():
             "sub_nicho": "",
             "gancho_3s": "Gancho",
             "gatilho_mental": "Urgência",
+            "tipo_angulo": "demonstracao",
             "transcricao_video": "Fala",
             "copy_texto": "Copy",
         }
@@ -963,6 +974,8 @@ def test_skills_carregam_persona_e_o_template_do_angulo():
     assert "Nicho: Casa" in texto
     assert "Gancho: Gancho" in texto
     assert "Copy: Copy" in texto
+    assert "demonstracao" in texto
+    assert "nunca o mesmo" in texto
     assert "system_instruction=instrucao_angulo" in inspect.getsource(worker._gerar_angulo)
 
 

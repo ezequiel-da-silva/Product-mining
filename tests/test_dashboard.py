@@ -324,6 +324,7 @@ def test_consultas_trazem_gancho_link_e_detalhe():
         for coluna in (
             "gancho_3s",
             "gatilho_mental",
+            "tipo_angulo",
             "url_destino",
             "copy_texto",
             "transcricao_video",

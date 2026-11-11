@@ -46,7 +46,7 @@ O preço falado e o preço da página usam BRL ou USD. O COGS do 1688 é CNY e o
 
 ## Estado
 
-As migrações vão de `001` a `026`. O mapa do que entrou e do que continua de fora está em `docs/FRONTEIRAS.md`.
+As migrações vão de `001` a `027`. O mapa do que entrou e do que continua de fora está em `docs/FRONTEIRAS.md`.
 
 - O producer usa uma única aba CDP em `host.docker.internal`, na Biblioteca de Anúncios ou em `CDP_TARGET_URL`. O aquecimento do navegador continua manual.
 - A página de destino sai por `curl_cffi` com `impersonate` de Chrome quando `EGRESS_PROXIES` está definido. O resolve é `HOST:PORT:IP`. Sem proxy, o socket continua no IP já validado.

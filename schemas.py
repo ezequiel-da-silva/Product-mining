@@ -1,7 +1,7 @@
 import unicodedata
 from typing import List, Literal, Optional, get_args
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, create_model, model_validator
 
 _CAMPOS_PROIBIDOS = {"fornecedor", "cogs", "cogs_estimado", "depoimento", "provas_sociais", "foto_url"}
 
@@ -21,6 +21,14 @@ NichoCanonico = Literal[
 ]
 NICHOS_CANONICOS: tuple[str, ...] = get_args(NichoCanonico)
 
+TipoAngulo = Literal[
+    "dor_problema",
+    "demonstracao",
+    "prova_social_ugc",
+    "comparativo",
+]
+TIPOS_ANGULO: tuple[str, ...] = get_args(TipoAngulo)
+
 
 def _chave_nicho(valor: str) -> str:
     decomposicao = unicodedata.normalize("NFKD", valor.strip().casefold())
@@ -39,9 +47,42 @@ def nicho_canonico(frase: str) -> str | None:
 
 
 class AnguloVenda(BaseModel):
+    tipo: TipoAngulo = Field(
+        description=(
+            "Arquétipo deste ângulo. dor_problema é sofrimento sem a solução. "
+            "demonstracao é usabilidade e transformação. prova_social_ugc é depoimento nativo. "
+            "comparativo é antes e depois ou método antigo contra o novo."
+        )
+    )
     titulo: str = Field(description="Título curto do ângulo de venda (ex: 'Foco na Economia de Tempo').")
     foco_emocional: str = Field(description="O gatilho emocional exato (ex: Vaidade, Medo, Praticidade).")
     copy_sugerida: str = Field(description="Sugestão de um novo texto de anúncio curto (Copy) usando este ângulo.")
+
+
+def schema_geracao_angulo(original: str | None) -> type[BaseModel]:
+    """Com arquétipo original, o schema só aceita um dos outros três."""
+    if original not in TIPOS_ANGULO:
+        return GeracaoAnguloSchema
+    opostos = tuple(tipo for tipo in TIPOS_ANGULO if tipo != original)
+    tipo_fechado = Literal.__getitem__(opostos)
+    angulo = create_model(
+        "AnguloOposto",
+        tipo=(tipo_fechado, Field(description="Arquétipo diferente do anúncio original.")),
+        titulo=(str, Field(description="Título curto do ângulo de venda.")),
+        foco_emocional=(str, Field(description="O gatilho emocional exato.")),
+        copy_sugerida=(str, Field(description="Sugestão de um novo texto de anúncio curto.")),
+    )
+    return create_model(
+        "GeracaoAnguloOposto",
+        angulos_alternativos=(
+            List[angulo],  # type: ignore[valid-type]
+            Field(
+                description="Um ângulo de arquétipo diferente do original.",
+                min_length=1,
+                max_length=1,
+            ),
+        ),
+    )
 
 
 class GeracaoAnguloSchema(BaseModel):
@@ -76,6 +117,14 @@ class AnaliseAnuncioSchema(BaseModel):
     )
     gatilho_mental: str = Field(
         description="O gatilho mental predominante usado na Copy ou no Vídeo (Ex: Dor/Problema Agudo, Prova Social, Urgência)."
+    )
+    tipo_angulo: TipoAngulo = Field(
+        description=(
+            "Arquétipo do criativo original. dor_problema foca o sofrimento ou a ineficiência sem a solução. "
+            "demonstracao foca usabilidade, funcionamento e transformação. "
+            "prova_social_ugc é depoimento, unboxing ou selfie review. "
+            "comparativo é antes e depois, economia ou método tradicional contra o novo."
+        )
     )
     objecoes_quebradas: List[str] = Field(
         description="Lista de objeções do comprador que o anúncio tenta quebrar (ex: frete, confiança, tempo de resultado)."
@@ -123,3 +172,14 @@ class AnaliseAnuncioSchema(BaseModel):
             return self
         self.preco_moeda = moeda
         return self
+
+
+class PecasVariacaoSchema(BaseModel):
+    headline: str = Field(min_length=1, description="Headline de impacto com gancho de curiosidade ou benefício direto.")
+    ugc: str = Field(min_length=1, description="Roteiro de 30 segundos em primeira pessoa, estilo depoimento nativo.")
+    stories: str = Field(min_length=1, description="Copy sequencial em 3 telas para Stories ou Reels, com CTA claro.")
+
+
+class ParecerJuizSchema(BaseModel):
+    nicho: NichoCanonico = Field(description="Nicho canônico validado.")
+    motivo: str = Field(description="Justificativa sucinta para o enquadramento.")
