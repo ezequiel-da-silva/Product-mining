@@ -25,6 +25,7 @@ product_mining/
 │   └── worker.Dockerfile      # Imagem base para os workers de IA e Qualificação
 ├── docs/                      # SDD, skills da IA, acessibilidade e avaliação do agente
 ├── infra/
+│   ├── minerar.ps1            # Inicia ou pausa a varredura no Windows
 │   ├── init-db.sql            # DDL do PostgreSQL, índices pgvector e RBAC
 │   └── migrations/            # Migrações idempotentes aplicadas por apply-migrations.sh
 ├── prompts/                   # Skills do Gemini: persona, extração e ângulo A/B
@@ -263,6 +264,20 @@ permanece para a tentativa seguinte.
 * **Monitoramento Celery (Flower):** [http://localhost:5555](http://localhost:5555)
 
 
+* **Iniciar a mineração (Windows):** o painel em [http://localhost:8501](http://localhost:8501) só filtra ofertas já analisadas. A varredura começa no PowerShell, na pasta do projeto, com o Rancher Desktop aberto. O script abre o Chrome na porta 9222 com o perfil `C:\chrome-dev-profile`, leva a aba à Biblioteca de Anúncios (país BR, anúncios ativos, frase exata) e sobe somente o `ad-producer`.
+
+```powershell
+.\infra\minerar.ps1 -Term "skin care"
+```
+
+A conclusão aparece como `Varredura no ar: Modo Stealth ativado.` Enquanto o extrator estiver no ar, deixe essa aba da Biblioteca quieta: ele é quem controla a página.
+
+* **Pausar a mineração:** para só o `ad-producer`. O Chrome, a ponte CDP e os workers continuam no ar.
+
+```powershell
+.\infra\minerar.ps1 -Pausar
+```
+
 * **Verificar Logs do Extrator:**
 ```bash
 docker compose logs -f ad-producer
@@ -305,6 +320,6 @@ O aquecimento continua manual. O producer não abre perfil, não simula carrinho
 
 * **D1 a D3:** A pessoa cadastra a conta no IP móvel e navega por conta própria, com o perfil isolado no anti-detect.
 * **D4 e D5:** A pessoa visita as lojas do nicho no mesmo navegador. O software não clica em carrinho nem abandona checkout.
-* **D7 em diante:** O `ad-producer` só lê a aba da Biblioteca que já estiver aberta. Se a aba some ou a sessão cai no login, ele grava `sessao:estado` e para de publicar. A retomada é humana.
+* **D7 em diante:** No Windows, `.\infra\minerar.ps1 -Term "..."` abre o Chrome de depuração, posiciona a Biblioteca e sobe o extrator. O `ad-producer` só lê essa aba. Se ela some ou a sessão cai no login, ele grava `sessao:estado` e para de publicar. A retomada é humana.
 
 O que o código faz e o que continua manual está em `docs/FRONTEIRAS.md`.

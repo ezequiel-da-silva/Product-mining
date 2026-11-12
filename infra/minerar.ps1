@@ -86,12 +86,31 @@ function Stop-Produtor {
     }
 }
 
+function Connect-ProdutorNaRedeDoRedis {
+    $formato = '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}'
+    $rede = (docker inspect spy_redis --format $formato | Select-Object -First 1)
+    if (-not $rede) {
+        throw 'Não encontrei a rede do Redis.'
+    }
+    $rede = $rede.Trim()
+    $redes = docker inspect spy_producer --format $formato
+    if ($redes -match [regex]::Escape($rede)) {
+        return
+    }
+    Write-Output "Ligando o extrator à rede $rede."
+    docker network connect $rede spy_producer
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Não foi possível ligar o extrator à rede do Redis.'
+    }
+}
+
 function Start-Produtor {
     Write-Output 'Iniciando o extrator.'
     docker compose up -d --no-deps ad-producer
     if ($LASTEXITCODE -ne 0) {
         throw 'Não foi possível subir o ad-producer.'
     }
+    Connect-ProdutorNaRedeDoRedis
 }
 
 function Update-CdpBridgeIp {
