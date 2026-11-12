@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.9.0...v0.10.0) (2026-11-12)
+
+
+### Features
+
+* add tipo_angulo field and related functionality ([7dc0cbf](https://github.com/ezequiel-da-silva/Product-mining/commit/7dc0cbf2c5d1cb22a45233bc08bd2a9ee8ea0c30))
+
 ## [0.9.0](https://github.com/ezequiel-da-silva/Product-mining/compare/v0.8.1...v0.9.0) (2026-11-09)
 
 
